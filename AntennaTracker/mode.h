@@ -11,6 +11,7 @@ public:
         SCAN=2,
         SERVOTEST=3,
         GUIDED=4,
+        RSSI_SCAN=6,    /*NatiE*/
         AUTO=10,
         INITIALISING=16
         // Mode number 30 reserved for "offboard" for external/lua control.
@@ -129,4 +130,54 @@ public:
     const char* name() const override { return "Stop"; }
     bool requires_armed_servos() const override { return false; }
     void update() override {};
+};
+
+/*NatiE*/
+class ModeRSSIScan : public Mode {
+public:
+    Mode::Number number() const override { return Mode::Number::RSSI_SCAN; }
+    const char *name() const override { return "RSSI_SCAN"; }
+    bool requires_armed_servos() const override { return true; }
+    void update() override;
+
+private:
+    bool _initialized {false};
+    enum class ScanState : uint8_t {
+        SCAN_PAN,        // sweeping pan at fixed tilt
+        SCAN_TILT,       // sweeping tilt at locked pan
+        DITHER,          // maintaining lock with small movements
+        WAIT_SETTLE,     // pausing after servo move
+    };
+
+    ScanState   _state          {ScanState::SCAN_PAN};
+    ScanState   _state_after_settle;   // return state after settle wait
+
+    // ---------- scan tracking ----------
+    float   _pan_current        {0.0f};   // degrees
+    float   _tilt_current       {0.0f};
+    float   _pan_best           {0.0f};
+    float   _tilt_best          {0.0f};
+    float   _rssi_best          {0.0f};
+    float   _rssi_at_lock       {0.0f};   // RSSI when we declared lock
+
+    // ---------- dither ----------
+    int8_t  _dither_step        {0};      // -1, 0, +1 for pan/tilt cycle
+    float   _dither_rssi[4]     {};       // [pan-, pan+, tilt-, tilt+]
+
+    // ---------- timing ----------
+    uint32_t _settle_start_ms   {0};
+
+    // ---------- helpers ----------
+    float   read_rssi_avg();
+    void    move_and_wait(float pan_deg, float tilt_deg, ScanState next);
+    void    set_servos(float pan_deg, float tilt_deg);
+    void    start_pan_scan();
+    void    start_tilt_scan();
+    void    start_dither();
+
+    void    update_scan_pan();
+    void    update_scan_tilt();
+    void    update_dither();
+    void    update_wait_settle();
+    bool    init_rssi_scan();
 };

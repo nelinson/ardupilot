@@ -156,6 +156,18 @@ void Tracker::disarm_servos()
 #endif
 }
 
+/*NatiE*/
+void Tracker::update_auto_armed()
+{
+    // Implementation for updating auto armed status
+}
+
+/*NatiE*/
+void Tracker::update_servos_from_nav_status()
+{
+    // Implementation for updating servos from navigation status
+}
+
 /*
   setup servos to trim value after initialising
  */
@@ -216,6 +228,9 @@ bool Tracker::set_mode(const uint8_t new_mode, const ModeReason reason)
         break;
     case Mode::Number::GUIDED:
         fred = &mode_guided;
+        break;
+    case Mode::Number::RSSI_SCAN:
+        fred = &mode_rssi_scan;
         break;
     }
     if (fred == nullptr) {

@@ -38,6 +38,10 @@ uint8_t GCS_MAVLINK_Tracker::base_mode() const
 
     case Mode::Number::INITIALISING:
         break;
+    /*NatiE*/
+    case Mode::Number::RSSI_SCAN:
+        //_base_mode |= MAV_MODE_FLAG_GUIDED_ENABLED;
+        break;
     }
 
     // we are armed if safety switch is not disarmed

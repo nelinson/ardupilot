@@ -63,9 +63,19 @@ public:
     friend class ModeAuto;
     friend class ModeGuided;
     friend class Mode;
+    friend class ModeRSSIScan; /*NatiE*/
 
     void arm_servos();
     void disarm_servos();
+    void update_auto_armed();
+    void update_servos_from_nav_status();
+
+    /* NatiE start */
+    //const Parameters& p() { return g; } 
+    struct {
+        const float angle_max_tilt = 0.0f; //NatiE ???
+    } aparm;
+    /* NatiE end */
 
 private:
     Parameters g;
@@ -104,6 +114,7 @@ private:
     ModeScan mode_scan;
     ModeServoTest mode_servotest;
     ModeStop mode_stop;
+    ModeRSSIScan mode_rssi_scan; /*NatiE*/
 
     // Vehicle state
     struct {

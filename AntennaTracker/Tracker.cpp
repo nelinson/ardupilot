@@ -145,6 +145,10 @@ Mode *Tracker::mode_from_mode_num(const Mode::Number num)
     case Mode::Number::INITIALISING:
         ret = &mode_initialising;
         break;
+    /*NatiE*/
+    case Mode::Number::RSSI_SCAN:
+        ret = &mode_rssi_scan;
+        break;
     }
     return ret;
 }

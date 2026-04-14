@@ -529,6 +529,64 @@ const AP_Param::Info Tracker::var_info[] = {
     GOBJECT(_gcs,           "MAV",  GCS),
 #endif
 
+    /*NatiE start*/
+
+    // @Param: RSSI_PAN_STEP
+    // @DisplayName: RSSI Scan Pan Step
+    // @Description: Pan axis step size in degrees during RSSI scan
+    // @Range: 1 30
+    // @Units: deg
+    // @User: Standard
+    GSCALAR(rssi_scan_pan_step,  "RSSI_PAN_STEP",  5),
+
+    // @Param: RSSI_TILT_STEP
+    // @DisplayName: RSSI Scan Tilt Step
+    // @Description: Tilt axis step size in degrees during RSSI scan
+    // @Range: 1 30
+    // @Units: deg
+    // @User: Standard
+    GSCALAR(rssi_scan_tilt_step, "RSSI_TILT_STEP", 10),
+
+    // @Param: RSSI_SETTLE_MS
+    // @DisplayName: RSSI Settle Time
+    // @Description: Milliseconds to wait after servo move before sampling RSSI
+    // @Range: 50 500
+    // @Units: ms
+    // @User: Standard
+    GSCALAR(rssi_scan_settle_ms, "RSSI_SETTLE_MS", 150),
+
+    // @Param: RSSI_SAMPLES
+    // @DisplayName: RSSI Sample Count
+    // @Description: Number of RSSI readings to average per position
+    // @Range: 1 16
+    // @User: Standard
+    GSCALAR(rssi_scan_samples,   "RSSI_SAMPLES",   4),
+
+    // @Param: RSSI_LOCK_THR
+    // @DisplayName: RSSI Lock Threshold
+    // @Description: Minimum RSSI percentage to consider signal acquired
+    // @Range: 5 80
+    // @Units: %
+    // @User: Standard
+    GSCALAR(rssi_lock_threshold, "RSSI_LOCK_THR",  30),
+
+    // @Param: RSSI_DITHER
+    // @DisplayName: RSSI Dither Angle
+    // @Description: Degrees +/- to dither around locked position to maintain peak
+    // @Range: 2 20
+    // @Units: deg
+    // @User: Standard
+    GSCALAR(rssi_dither_angle,   "RSSI_DITHER",    8),
+
+    // @Param: RSSI_RESCAN_DROP
+    // @DisplayName: RSSI Rescan Trigger Drop
+    // @Description: RSSI percentage drop from peak that triggers a re-scan
+    // @Range: 5 50
+    // @Units: %
+    // @User: Standard
+    GSCALAR(rssi_rescan_drop,    "RSSI_RESCAN_DROP", 20),
+    /*NatiE end*/
+
     AP_VAREND
 };
 

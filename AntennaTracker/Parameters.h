@@ -134,6 +134,15 @@ public:
 
         k_param_vehicle = 257, // vehicle common block of parameters
         k_param__gcs = 258,
+
+        /*NatiE*/
+        k_param_rssi_scan_pan_step/*NatiE = 200*/,   // pan degrees per step
+        k_param_rssi_scan_tilt_step,        // tilt degrees per step
+        k_param_rssi_scan_settle_ms,        // ms to wait after move before reading
+        k_param_rssi_scan_samples,          // RSSI samples to average per position
+        k_param_rssi_lock_threshold,        // min RSSI% to consider locked
+        k_param_rssi_dither_angle,          // ± degrees for maintenance dither
+        k_param_rssi_rescan_drop,           // RSSI drop % that triggers re-scan
     };
 
     AP_Int16 format_version;
@@ -180,6 +189,15 @@ public:
     // AC_PID controllers
     AC_PID         pidPitch2Srv;
     AC_PID         pidYaw2Srv;
+
+    /*NatiE*/
+    AP_Int8     rssi_scan_pan_step;     // default 5  (degrees)
+    AP_Int8     rssi_scan_tilt_step;    // default 10 (degrees)
+    AP_Int16    rssi_scan_settle_ms;    // default 150 (ms)
+    AP_Int8     rssi_scan_samples;      // default 4
+    AP_Int8     rssi_lock_threshold;    // default 30 (%)
+    AP_Int8     rssi_dither_angle;      // default 8  (degrees)
+    AP_Int8     rssi_rescan_drop;       // default 20 (%)
 
     Parameters() :
         pidPitch2Srv(0.2, 0.0f, 0.05f, 0.02f, 4000.0f, 0.0f, 0.0f, 0.0f, 0.1f),
