@@ -157,16 +157,16 @@ void Tracker::disarm_servos()
 }
 
 /*NatiE*/
-void Tracker::update_auto_armed()
-{
-    // Implementation for updating auto armed status
-}
+// void Tracker::update_auto_armed()
+// {
+//     // Implementation for updating auto armed status
+// }
 
 /*NatiE*/
-void Tracker::update_servos_from_nav_status()
-{
-    // Implementation for updating servos from navigation status
-}
+// void Tracker::update_servos_from_nav_status()
+// {
+//     // Implementation for updating servos from navigation status
+// }
 
 /*
   setup servos to trim value after initialising

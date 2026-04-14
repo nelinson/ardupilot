@@ -37,10 +37,10 @@ bool ModeRSSIScan::init_rssi_scan()
 void ModeRSSIScan::update()
 {
     if (!_initialized) {
+        _initialized = true;
         if (!init_rssi_scan()) {
             return;  // RSSI not available
         }
-        _initialized = true;
     }
 
     switch (_state) {
@@ -61,7 +61,9 @@ void ModeRSSIScan::start_pan_scan()
     _rssi_best  = 0.0f;
 
     // Start tilt at midpoint so pan scan has a fair signal
-    //!!!NatiE _tilt_current = (tracker.g.ahrs_trim_y + 0.0f);  // mid tilt — adjust to your mount
+    const AP_AHRS &ahrs = AP::ahrs();
+    _tilt_current = (ahrs.get_trim().y + 0.0f);  // mid tilt — adjust to your mount
+    //NatiE _tilt_current = (tracker.g.ahrs_trim_y + 0.0f);  // mid tilt — adjust to your mount
     _pan_current  = -180.0f;
 
     gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SCAN: Pan sweep starting");
@@ -242,7 +244,8 @@ float ModeRSSIScan::read_rssi_avg()
     float sum = 0.0f;
     int   n   = MAX(1, (int)tracker.g.rssi_scan_samples);
     for (int i = 0; i < n; i++) {
-        //!!!NatiE sum += AP::rssi()->get_rssi();   // returns 0.0–1.0
+        sum += AP::rssi()->read_receiver_rssi();   // returns 0.0–1.0
+        //NatiE sum += AP::rssi()->get_rssi();   // returns 0.0–1.0
         hal.scheduler->delay(10);
     }
     return sum / n;
@@ -263,6 +266,8 @@ void ModeRSSIScan::set_servos(float pan_deg, float tilt_deg)
     // AntennaTracker uses centidegrees internally
     tracker.nav_status.bearing       = pan_deg;
     tracker.nav_status.pitch         = tilt_deg;
-    tracker.update_auto_armed();
-    tracker.update_servos_from_nav_status();
+    update_auto(); //???NatiE
+
+    //!!!NatiE tracker.update_auto_armed();
+    //!!!NatiE tracker.update_servos_from_nav_status();
 }
