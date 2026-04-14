@@ -73,7 +73,7 @@ public:
     /* NatiE start */
     //const Parameters& p() { return g; } 
     struct {
-        const float angle_max_tilt = 0.0f; //???NatiE
+        const float angle_max_tilt = 90.0f; //???NatiE
     } aparm;
     /* NatiE end */
 
