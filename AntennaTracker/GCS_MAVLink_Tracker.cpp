@@ -29,6 +29,7 @@ uint8_t GCS_MAVLINK_Tracker::base_mode() const
     case Mode::Number::SERVOTEST:
     case Mode::Number::AUTO:
     case Mode::Number::GUIDED:
+    case Mode::Number::RSSI_SCAN:
         _base_mode |= MAV_MODE_FLAG_GUIDED_ENABLED |
             MAV_MODE_FLAG_STABILIZE_ENABLED;
         // note that MAV_MODE_FLAG_AUTO_ENABLED does not match what
@@ -37,10 +38,6 @@ uint8_t GCS_MAVLINK_Tracker::base_mode() const
         break;
 
     case Mode::Number::INITIALISING:
-        break;
-    /*NatiE*/
-    case Mode::Number::RSSI_SCAN:
-        //_base_mode |= MAV_MODE_FLAG_GUIDED_ENABLED;
         break;
     }
 
@@ -578,6 +575,7 @@ uint8_t GCS_MAVLINK_Tracker::send_available_mode(uint8_t index) const
         &tracker.mode_manual,
         &tracker.mode_stop,
         &tracker.mode_scan,
+        &tracker.mode_rssi_scan,
         &tracker.mode_guided,
         &tracker.mode_servotest,
         &tracker.mode_auto,

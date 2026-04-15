@@ -67,15 +67,6 @@ public:
 
     void arm_servos();
     void disarm_servos();
-    void update_auto_armed();
-    void update_servos_from_nav_status();
-
-    /* NatiE start */
-    //const Parameters& p() { return g; } 
-    struct {
-        const float angle_max_tilt = 90.0f; //???NatiE
-    } aparm;
-    /* NatiE end */
 
 private:
     Parameters g;

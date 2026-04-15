@@ -134,6 +134,9 @@ public:
 
         k_param_vehicle = 257, // vehicle common block of parameters
         k_param__gcs = 258,
+#if AP_RSSI_ENABLED
+        k_param_rssi,
+#endif
 
         /*NatiE*/
         k_param_rssi_scan_pan_step/*NatiE = 200*/,   // pan degrees per step

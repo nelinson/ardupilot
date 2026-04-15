@@ -37,10 +37,10 @@ bool ModeRSSIScan::init_rssi_scan()
 void ModeRSSIScan::update()
 {
     if (!_initialized) {
-        _initialized = true;
         if (!init_rssi_scan()) {
             return;  // RSSI not available
         }
+        _initialized = true;
     }
 
     switch (_state) {
@@ -60,10 +60,8 @@ void ModeRSSIScan::start_pan_scan()
     _tilt_best  = 0.0f;
     _rssi_best  = 0.0f;
 
-    // Start tilt at midpoint so pan scan has a fair signal
-    const AP_AHRS &ahrs = AP::ahrs();
-    _tilt_current = (ahrs.get_trim().y + 0.0f);  // mid tilt — adjust to your mount
-    //NatiE _tilt_current = (tracker.g.ahrs_trim_y + 0.0f);  // mid tilt — adjust to your mount
+    // Start at configured midpoint of mechanical tilt range.
+    _tilt_current = (tracker.g.pitch_min + tracker.g.pitch_max) * 0.5f;
     _pan_current  = -180.0f;
 
     gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SCAN: Pan sweep starting");
@@ -99,7 +97,7 @@ void ModeRSSIScan::update_scan_pan()
 void ModeRSSIScan::start_tilt_scan()
 {
     _rssi_best     = 0.0f;   // reset — we search tilt now
-    _tilt_current  = tracker.aparm.angle_max_tilt * -0.01f;  // tilt min (degrees)
+    _tilt_current  = tracker.g.pitch_min;
 
     gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SCAN: Tilt sweep starting at pan=%.1f",
         (double)_pan_best);
@@ -117,7 +115,7 @@ void ModeRSSIScan::update_scan_tilt()
     }
 
     _tilt_current += tracker.g.rssi_scan_tilt_step;
-    float tilt_max = tracker.aparm.angle_max_tilt * 0.01f;
+    const float tilt_max = tracker.g.pitch_max;
 
     if (_tilt_current > tilt_max) {
         // Tilt sweep done — move to peak and start dithering
@@ -212,8 +210,8 @@ void ModeRSSIScan::update_dither()
             // Clamp
             _pan_best  = constrain_float(_pan_best,  -180.0f, 180.0f);
             _tilt_best = constrain_float(_tilt_best,
-                          tracker.aparm.angle_max_tilt * -0.01f,
-                          tracker.aparm.angle_max_tilt *  0.01f);
+                          tracker.g.pitch_min,
+                          tracker.g.pitch_max);
         }
         // Return to best and restart dither cycle
         _dither_step = 0;
@@ -245,8 +243,6 @@ float ModeRSSIScan::read_rssi_avg()
     int   n   = MAX(1, (int)tracker.g.rssi_scan_samples);
     for (int i = 0; i < n; i++) {
         sum += AP::rssi()->read_receiver_rssi();   // returns 0.0–1.0
-        //NatiE sum += AP::rssi()->get_rssi();   // returns 0.0–1.0
-        hal.scheduler->delay(10);
     }
     return sum / n;
 }
@@ -263,11 +259,7 @@ void ModeRSSIScan::move_and_wait(float pan_deg, float tilt_deg, ScanState next_s
 // Convert degrees to servo commands and apply
 void ModeRSSIScan::set_servos(float pan_deg, float tilt_deg)
 {
-    // AntennaTracker uses centidegrees internally
     tracker.nav_status.bearing       = pan_deg;
     tracker.nav_status.pitch         = tilt_deg;
-    update_auto(); //???NatiE
-
-    //!!!NatiE tracker.update_auto_armed();
-    //!!!NatiE tracker.update_servos_from_nav_status();
+    update_auto();
 }

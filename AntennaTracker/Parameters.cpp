@@ -529,6 +529,12 @@ const AP_Param::Info Tracker::var_info[] = {
     GOBJECT(_gcs,           "MAV",  GCS),
 #endif
 
+#if AP_RSSI_ENABLED
+    // @Group: RSSI_
+    // @Path: ../libraries/AP_RSSI/AP_RSSI.cpp
+    GOBJECT(rssi,           "RSSI_", AP_RSSI),
+#endif
+
     /*NatiE start*/
 
     // @Param: RSSI_PAN_STEP
