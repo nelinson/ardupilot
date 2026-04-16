@@ -1,0 +1,5 @@
+build/
+build-*/
+build-win/
+build-win-*/
+_deps/
