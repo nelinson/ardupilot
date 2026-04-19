@@ -56,25 +56,32 @@ bool HttpClient::get(const std::string& url,
     out_body.clear();
     out_error.clear();
 
-    URL_COMPONENTSA parts;
-    ZeroMemory(&parts, sizeof(parts));
-    parts.dwStructSize = sizeof(parts);
-
-    char host[256] = {};
-    char path[2048] = {};
-    parts.lpszHostName = host;
-    parts.dwHostNameLength = sizeof(host);
-    parts.lpszUrlPath = path;
-    parts.dwUrlPathLength = sizeof(path);
-    parts.dwSchemeLength = 1;
-
-    if (!WinHttpCrackUrl(url.c_str(), 0, 0, reinterpret_cast<URL_COMPONENTS*>(&parts))) {
-        out_error = std::string("WinHttpCrackUrl failed: ") + win_error(GetLastError());
+    const std::wstring wurl = to_wide(url);
+    if (wurl.empty() && !url.empty()) {
+        out_error = "URL UTF-8 conversion failed";
         return false;
     }
 
-    const bool is_https = (parts.nScheme == INTERNET_SCHEME_HTTPS);
-    const INTERNET_PORT port = parts.nPort;
+    // Use wide WinHTTP APIs explicitly (URL_COMPONENTSA is not reliable with UNICODE + some SDKs).
+    URL_COMPONENTSW uc;
+    ZeroMemory(&uc, sizeof(uc));
+    uc.dwStructSize = sizeof(uc);
+
+    wchar_t host[256] = {};
+    wchar_t path[4096] = {};
+    uc.lpszHostName = host;
+    uc.dwHostNameLength = static_cast<DWORD>(sizeof(host) / sizeof(host[0]));
+    uc.lpszUrlPath = path;
+    uc.dwUrlPathLength = static_cast<DWORD>(sizeof(path) / sizeof(path[0]));
+    uc.dwSchemeLength = static_cast<DWORD>(-1);
+
+    if (!WinHttpCrackUrlW(wurl.c_str(), static_cast<DWORD>(wurl.length()), 0, &uc)) {
+        out_error = std::string("WinHttpCrackUrlW failed: ") + win_error(GetLastError());
+        return false;
+    }
+
+    const bool is_https = (uc.nScheme == INTERNET_SCHEME_HTTPS);
+    const INTERNET_PORT port = uc.nPort;
 
     HINTERNET hSession = WinHttpOpen(L"rssi_bridge/1.0",
                                      WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -92,10 +99,7 @@ bool HttpClient::get(const std::string& url,
                        static_cast<int>(timeout_ms),
                        static_cast<int>(timeout_ms));
 
-    const std::wstring whost = to_wide(std::string(host, host + parts.dwHostNameLength));
-    const std::wstring wpath = to_wide(std::string(path, path + parts.dwUrlPathLength));
-
-    HINTERNET hConnect = WinHttpConnect(hSession, whost.c_str(), port, 0);
+    HINTERNET hConnect = WinHttpConnect(hSession, uc.lpszHostName, port, 0);
     if (!hConnect) {
         out_error = std::string("WinHttpConnect failed: ") + win_error(GetLastError());
         WinHttpCloseHandle(hSession);
@@ -105,7 +109,7 @@ bool HttpClient::get(const std::string& url,
     DWORD flags = is_https ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET hRequest = WinHttpOpenRequest(hConnect,
                                            L"GET",
-                                           wpath.c_str(),
+                                           uc.lpszUrlPath,
                                            nullptr,
                                            WINHTTP_NO_REFERER,
                                            WINHTTP_DEFAULT_ACCEPT_TYPES,
@@ -127,7 +131,6 @@ bool HttpClient::get(const std::string& url,
                               wpass.c_str(),
                               nullptr);
     } else {
-        // Username may be empty in this POC; WinHTTP still accepts it.
         const std::wstring wpass = to_wide(basic_auth_password);
         WinHttpSetCredentials(hRequest,
                               WINHTTP_AUTH_TARGET_SERVER,
@@ -209,4 +212,3 @@ bool HttpClient::get(const std::string& url,
 }
 
 #endif
-

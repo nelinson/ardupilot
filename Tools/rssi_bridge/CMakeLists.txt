@@ -28,10 +28,18 @@ endif()
 
 if(RSSI_BRIDGE_FETCH_NLOHMANN_JSON)
     include(FetchContent)
-    FetchContent_Declare(
-        nlohmann_json
-        URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
-    )
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+        FetchContent_Declare(
+            nlohmann_json
+            URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        )
+    else()
+        FetchContent_Declare(
+            nlohmann_json
+            URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+        )
+    endif()
     FetchContent_MakeAvailable(nlohmann_json)
 endif()
 

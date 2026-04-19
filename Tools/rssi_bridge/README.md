@@ -33,9 +33,36 @@ cmake .. -DMAVLINK_INCLUDE_DIR=/path/to/ardupilot/build/sitl/libraries/GCS_MAVLi
 
 This project supports native Windows builds (HTTP via WinHTTP, serial via COM ports).
 
-### Visual Studio + CMake
+### Visual Studio 2026 (CMake presets)
 
-From a Developer PowerShell:
+This folder includes `CMakePresets.json` with a preset **`windows-vs2026-x64`** that uses the CMake generator **`Visual Studio 18 2026`**. That generator requires **CMake 4.2 or newer** (install the latest CMake from [cmake.org](https://cmake.org/download/) or use the version bundled with your Visual Studio install if it is new enough).
+
+**Option A — Visual Studio IDE**
+
+1. Install **Visual Studio 2026 Community** with workload **Desktop development with C++**.
+2. Start Visual Studio → **Open a local folder** → select `Tools\rssi_bridge` (the folder that contains `CMakeLists.txt`).
+3. When CMake configures, choose the configure preset **`windows-vs2026-x64`** (or from the menu: **Project → CMake presets for rssi_bridge → windows-vs2026-x64**).
+4. Build configuration **Release**, then **Build → Build All**.
+
+The executable is typically:
+
+```text
+Tools\rssi_bridge\build\windows-vs2026-x64\Release\rssi_bridge.exe
+```
+
+**Option B — If CMake does not list VS 2026 yet**
+
+Use the **`windows-vs2022-x64`** preset instead (generator **Visual Studio 17 2022**), or from **Developer PowerShell for VS 2022**:
+
+```powershell
+cd Tools\rssi_bridge
+cmake --preset windows-vs2022-x64
+cmake --build --preset windows-vs2022-x64-release
+```
+
+### Visual Studio + CMake (command line, any generator)
+
+From **Developer PowerShell** (so `cl.exe` is on PATH), you can still use a plain build directory:
 
 ```powershell
 cd Tools\rssi_bridge

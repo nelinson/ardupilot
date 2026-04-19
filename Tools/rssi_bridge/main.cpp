@@ -46,7 +46,11 @@ static void usage(const char* argv0)
         << "\n"
         << "Defaults:\n"
         << "  --url         http://192.168.0.27/localrfstatus.json\n"
+#ifdef _WIN32
+        << "  --serial      COM12\n"
+#else
         << "  --serial      /dev/ttyACM0\n"
+#endif
         << "  --rate        10\n"
         << "  --timeout-ms  1000\n"
         << "\n"

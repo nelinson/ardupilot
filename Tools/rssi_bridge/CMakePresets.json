@@ -1,0 +1,74 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 21,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "rssi-bridge-base",
+            "hidden": true,
+            "binaryDir": "${sourceDir}/build/${presetName}"
+        },
+        {
+            "name": "windows-vs2026-x64",
+            "inherits": "rssi-bridge-base",
+            "displayName": "Windows x64 (Visual Studio 18 2026)",
+            "description": "Requires CMake 4.2+ with the Visual Studio 18 2026 generator (ships with recent VS / CMake installs).",
+            "generator": "Visual Studio 18 2026",
+            "architecture": "x64",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "windows-vs2022-x64",
+            "inherits": "rssi-bridge-base",
+            "displayName": "Windows x64 (Visual Studio 17 2022)",
+            "description": "Use if your CMake does not yet support the VS 18 2026 generator.",
+            "generator": "Visual Studio 17 2022",
+            "architecture": "x64",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "linux-ninja-release",
+            "inherits": "rssi-bridge-base",
+            "displayName": "Linux Release (Ninja)",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "windows-vs2026-x64-release",
+            "displayName": "Build Release (VS 2026 x64)",
+            "configurePreset": "windows-vs2026-x64",
+            "configuration": "Release"
+        },
+        {
+            "name": "windows-vs2022-x64-release",
+            "displayName": "Build Release (VS 2022 x64)",
+            "configurePreset": "windows-vs2022-x64",
+            "configuration": "Release"
+        },
+        {
+            "name": "linux-ninja-release-build",
+            "displayName": "Build (Linux Ninja Release)",
+            "configurePreset": "linux-ninja-release"
+        }
+    ]
+}
