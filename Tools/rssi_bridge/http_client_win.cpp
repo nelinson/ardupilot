@@ -75,8 +75,10 @@ bool HttpClient::get(const std::string& url,
     uc.dwUrlPathLength = static_cast<DWORD>(sizeof(path) / sizeof(path[0]));
     uc.dwSchemeLength = static_cast<DWORD>(-1);
 
-    if (!WinHttpCrackUrlW(wurl.c_str(), static_cast<DWORD>(wurl.length()), 0, &uc)) {
-        out_error = std::string("WinHttpCrackUrlW failed: ") + win_error(GetLastError());
+    // Use WinHttpCrackUrl macro (maps to WinHttpCrackUrlW under UNICODE). Some SDKs do not
+    // declare WinHttpCrackUrlW as a public C identifier.
+    if (!WinHttpCrackUrl(wurl.c_str(), static_cast<DWORD>(wurl.length()), 0, reinterpret_cast<LPURL_COMPONENTS>(&uc))) {
+        out_error = std::string("WinHttpCrackUrl failed: ") + win_error(GetLastError());
         return false;
     }
 
