@@ -22,6 +22,14 @@
 #include <AP_Param/AP_Param.h>
 #include <AP_Math/AP_Math.h>
 
+#if AP_RSSI_UDP_ENABLED || AP_RSSI_HTTP_ENABLED
+class SocketAPM;
+#endif
+
+#if AP_RSSI_HTTP_ENABLED
+#include <AP_Networking/AP_Networking_address.h>
+#endif
+
 class AP_RSSI
 {
 public:
@@ -32,6 +40,12 @@ public:
         RECEIVER           = 3,
         PWM_PIN            = 4,
         TELEMETRY_RADIO_RSSI = 5,
+#if AP_RSSI_UDP_ENABLED
+        UDP_ETHERNET       = 6,
+#endif
+#if AP_RSSI_HTTP_ENABLED
+        SOLO8_HTTP         = 7,
+#endif
     };
 
     AP_RSSI();
@@ -86,6 +100,66 @@ private:
         // the following two members are updated by the interrupt handler
         AP_HAL::PWMSource pwm_source;
     } pwm_state;
+
+#if AP_RSSI_UDP_ENABLED
+    // UDP Ethernet RSSI backend (e.g. Solo8 receiver streaming dBm over
+    // the local network). A worker thread owns the socket; the reader
+    // returns the last scaled value under a semaphore.
+    AP_Int16  rssi_udp_port;          // UDP bind port
+    AP_Int16  rssi_udp_loss_ms;       // age (ms) after which we report 0 RSSI
+    AP_Float  rssi_udp_dbm_low;       // dBm mapped to 0.0
+    AP_Float  rssi_udp_dbm_high;      // dBm mapped to 1.0
+
+    struct UDPState {
+        SocketAPM *sock;
+        HAL_Semaphore sem;
+        float    rssi_value;          // 0.0 .. 1.0
+        float    last_dbm;            // raw dBm (for logging / debug)
+        uint32_t last_reading_ms;     // AP_HAL::millis() of last valid packet
+        uint32_t packet_count;
+        uint32_t parse_errors;
+        bool     thread_started;
+        bool     bound;
+    } udp_state;
+
+    void udp_init();
+    void udp_thread();
+    bool parse_udp_packet(const uint8_t *buf, uint16_t len,
+                          float &out_dbm, bool &out_valid) const;
+    float read_udp_rssi();
+#endif  // AP_RSSI_UDP_ENABLED
+
+#if AP_RSSI_HTTP_ENABLED
+    // Solo8 HTTP/JSON backend. A worker thread periodically issues
+    // HTTP GET http://<ip>:<port>/localrfstatus.json, parses the three
+    // fields we care about (sigLevA0, sigLevB0, sigValid) and publishes
+    // a scaled 0..1 value under a semaphore.
+    AP_Networking_IPV4 rssi_http_ip{"192.168.0.27"};
+    AP_Int16  rssi_http_port;
+    AP_Int8   rssi_http_rate_hz;
+    AP_Int16  rssi_http_loss_ms;
+    AP_Float  rssi_http_dbm_low;
+    AP_Float  rssi_http_dbm_high;
+
+    struct HTTPState {
+        SocketAPM *sock;
+        HAL_Semaphore sem;
+        float    rssi_value;
+        float    last_dbm;
+        uint32_t last_reading_ms;
+        uint32_t poll_count;
+        uint32_t poll_errors;
+        bool     thread_started;
+    } http_state;
+
+    void http_init();
+    void http_thread();
+    bool http_poll_once(char *resp_buf, uint16_t resp_buf_len,
+                        uint16_t &resp_len);
+    bool parse_solo8_json(const char *body, uint16_t len,
+                          float &out_dbm, bool &out_valid) const;
+    float read_http_rssi();
+#endif  // AP_RSSI_HTTP_ENABLED
 
     // read the RSSI value from an analog pin - returns float in range 0.0 to 1.0
     float read_pin_rssi();

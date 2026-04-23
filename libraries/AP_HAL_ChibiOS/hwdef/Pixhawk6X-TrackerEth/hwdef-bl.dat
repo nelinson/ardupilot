@@ -1,0 +1,3 @@
+# bootloader hwdef for Pixhawk6X-TrackerEth.
+# Pin layout is identical to the stock Pixhawk6X bootloader.
+include ../Pixhawk6X/hwdef-bl.dat

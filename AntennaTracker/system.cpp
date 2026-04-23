@@ -49,6 +49,12 @@ void Tracker::init_ardupilot()
     rc().convert_options(RC_Channel::AUX_FUNC::ARMDISARM_UNUSED, RC_Channel::AUX_FUNC::ARMDISARM);
     rc().init();
 
+#if AP_RSSI_ENABLED
+    // initialise RSSI (required for ModeRSSIScan and the UDP Ethernet
+    // backend, which starts its receive thread from init())
+    rssi.init();
+#endif
+
     // initialise servos
     init_servos();
 
