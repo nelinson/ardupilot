@@ -426,14 +426,14 @@ void AP_RSSI::udp_init()
     udp_state.bound = false;
 
     if (rssi_udp_port.get() <= 0) {
-        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "RSSI_UDP: disabled (UDP_PORT=0)");
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Colugo RSSI_UDP: disabled (UDP_PORT=0)");
         return;
     }
 
     if (!hal.scheduler->thread_create(
             FUNCTOR_BIND_MEMBER(&AP_RSSI::udp_thread, void),
             "RSSI_UDP", 2048, AP_HAL::Scheduler::PRIORITY_IO, 0)) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "RSSI_UDP: thread create failed");
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo RSSI_UDP: thread create failed");
         return;
     }
     udp_state.thread_started = true;
@@ -446,7 +446,7 @@ void AP_RSSI::udp_thread()
 
     udp_state.sock = NEW_NOTHROW SocketAPM(true /*datagram*/);
     if (udp_state.sock == nullptr) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "RSSI_UDP: socket alloc failed");
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo RSSI_UDP: socket alloc failed");
         return;
     }
     udp_state.sock->set_blocking(false);
@@ -454,13 +454,13 @@ void AP_RSSI::udp_thread()
 
     const uint16_t bind_port = uint16_t(rssi_udp_port.get());
     if (!udp_state.sock->bind("0.0.0.0", bind_port)) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "RSSI_UDP: bind :%u failed", unsigned(bind_port));
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo RSSI_UDP: bind :%u failed", unsigned(bind_port));
         delete udp_state.sock;
         udp_state.sock = nullptr;
         return;
     }
     udp_state.bound = true;
-    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "RSSI_UDP: listening on :%u", unsigned(bind_port));
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Colugo RSSI_UDP: listening on :%u", unsigned(bind_port));
 
     uint8_t buf[128];
     while (true) {
@@ -566,8 +566,11 @@ float AP_RSSI::read_udp_rssi()
 // arrays of per-subcarrier SNR/sigLev). Add ~300 bytes of HTTP headers,
 // round up for growth across firmware revisions.
 #define SOLO8_HTTP_RESP_BUF 4096
-#define SOLO8_HTTP_CONNECT_TIMEOUT_MS 500
-#define SOLO8_HTTP_RECV_TIMEOUT_MS    400
+// On embedded lwIP the first TCP connect can be dominated by ARP resolution,
+// which may exceed a few hundred milliseconds on some switches/radios.
+// Keep these timeouts conservative to avoid spurious "last=C" failures.
+#define SOLO8_HTTP_CONNECT_TIMEOUT_MS 2000
+#define SOLO8_HTTP_RECV_TIMEOUT_MS    1500
 
 void AP_RSSI::http_init()
 {
@@ -580,11 +583,18 @@ void AP_RSSI::http_init()
     http_state.last_reading_ms = 0;
     http_state.poll_count = 0;
     http_state.poll_errors = 0;
+    http_state.connect_errors = 0;
+    http_state.send_errors = 0;
+    http_state.recv_errors = 0;
+    http_state.parse_errors = 0;
+    http_state.sig_invalid = 0;
+    http_state.last_http_bytes = 0;
+    http_state.last_stage = HTTPStage::OK;
 
     if (!hal.scheduler->thread_create(
             FUNCTOR_BIND_MEMBER(&AP_RSSI::http_thread, void),
             "RSSI_HTTP", 4096, AP_HAL::Scheduler::PRIORITY_IO, 0)) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "RSSI_HTTP: thread create failed");
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo RSSI_HTTP: thread create failed");
         return;
     }
     http_state.thread_started = true;
@@ -598,14 +608,21 @@ void AP_RSSI::http_thread()
     // /localrfstatus.json payload plus HTTP headers.
     char *resp = (char*)calloc(SOLO8_HTTP_RESP_BUF, 1);
     if (resp == nullptr) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "RSSI_HTTP: alloc failed");
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo RSSI_HTTP: alloc failed");
         return;
     }
 
-    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "RSSI_HTTP: polling %s:%u%s",
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Colugo RSSI_HTTP: polling %s:%u%s",
                   rssi_http_ip.get_str(),
                   unsigned(rssi_http_port.get()),
                   SOLO8_HTTP_PATH);
+
+    // Heartbeat cadence for the diagnostic STATUSTEXT. Kept deliberately
+    // coarse (10 s) so it never crowds the GCS message queue, but fast
+    // enough that a user can tell within a few seconds which stage of
+    // the pipeline is failing.
+    const uint32_t HEARTBEAT_MS = 10000;
+    uint32_t last_heartbeat_ms = AP_HAL::millis();
 
     while (true) {
         const int8_t hz_param = rssi_http_rate_hz.get();
@@ -614,10 +631,21 @@ void AP_RSSI::http_thread()
         const uint32_t t0 = AP_HAL::millis();
 
         uint16_t resp_len = 0;
-        const bool ok = http_poll_once(resp, SOLO8_HTTP_RESP_BUF, resp_len);
+        HTTPStage stage = HTTPStage::OK;
+        const bool ok = http_poll_once(resp, SOLO8_HTTP_RESP_BUF, resp_len, stage);
+        http_state.last_stage = stage;
         if (!ok) {
             http_state.poll_errors++;
+            http_state.last_http_bytes = 0;
+            switch (stage) {
+            case HTTPStage::CONNECT: http_state.connect_errors++; break;
+            case HTTPStage::SEND:    http_state.send_errors++;    break;
+            case HTTPStage::RECV:    http_state.recv_errors++;    break;
+            default: break;
+            }
         } else {
+            http_state.last_http_bytes = resp_len;
+
             // locate the start of the body (after "\r\n\r\n"); if not
             // found, treat the whole buffer as body.
             const char *body = resp;
@@ -630,7 +658,17 @@ void AP_RSSI::http_thread()
 
             float dbm = 0.0f;
             bool  valid = false;
-            if (parse_solo8_json(body, body_len, dbm, valid) && valid) {
+            const bool parsed = parse_solo8_json(body, body_len, dbm, valid);
+            if (!parsed) {
+                http_state.parse_errors++;
+            } else if (!valid) {
+                // body is well-formed but Solo8 says the current reading
+                // is not usable (no demod lock); keep dBm for visibility
+                // but do not update last_reading_ms so rxrssi stays 0.
+                http_state.sig_invalid++;
+                WITH_SEMAPHORE(http_state.sem);
+                http_state.last_dbm = dbm;
+            } else {
                 const float lo = rssi_http_dbm_low.get();
                 const float hi = rssi_http_dbm_high.get();
                 const float scaled = scale_and_constrain_float_rssi(dbm, lo, hi);
@@ -641,6 +679,49 @@ void AP_RSSI::http_thread()
                 http_state.last_reading_ms = AP_HAL::millis();
                 http_state.poll_count++;
             }
+        }
+
+        // Emit a compact heartbeat every HEARTBEAT_MS so the ground side
+        // can see which stage of the pipeline is advancing. Fields:
+        //   ok  = successful polls with sigValid=true
+        //   err = transport failures (TCP/HTTP)
+        //   prs = body received but JSON parse rejected
+        //   nv  = body parsed but sigValid=false
+        //   B   = bytes in last HTTP reply (0 if transport failed)
+        //   dBm = most recent raw sigLev (valid or not)
+        //   rssi = last scaled 0..1 fed to the tracker
+        const uint32_t now = AP_HAL::millis();
+        if (now - last_heartbeat_ms >= HEARTBEAT_MS) {
+            last_heartbeat_ms = now;
+            float snap_dbm = 0.0f;
+            float snap_rssi = 0.0f;
+            {
+                WITH_SEMAPHORE(http_state.sem);
+                snap_dbm  = http_state.last_dbm;
+                snap_rssi = http_state.rssi_value;
+            }
+            // Single compact line per 10s. Staged error counters let us
+            // see *which* step is failing when B=0 (C=connect S=send
+            // R=recv-empty). "last" shows the stage of the most recent
+            // poll as a single character so we can tell the *current*
+            // failure mode at a glance.
+            const char stage_c =
+                (http_state.last_stage == HTTPStage::OK)      ? 'O' :
+                (http_state.last_stage == HTTPStage::CONNECT) ? 'C' :
+                (http_state.last_stage == HTTPStage::SEND)    ? 'S' :
+                (http_state.last_stage == HTTPStage::RECV)    ? 'R' : '?';
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO,
+                          "Colugo RSSI_HTTP ok=%lu C=%lu S=%lu R=%lu prs=%lu nv=%lu last=%c B=%u rssi=%.2f",
+                          (unsigned long)http_state.poll_count,
+                          (unsigned long)http_state.connect_errors,
+                          (unsigned long)http_state.send_errors,
+                          (unsigned long)http_state.recv_errors,
+                          (unsigned long)http_state.parse_errors,
+                          (unsigned long)http_state.sig_invalid,
+                          stage_c,
+                          unsigned(http_state.last_http_bytes),
+                          double(snap_rssi));
+            (void)snap_dbm;
         }
 
         const uint32_t elapsed = AP_HAL::millis() - t0;
@@ -656,9 +737,10 @@ void AP_RSSI::http_thread()
   by parse_solo8_json.
 */
 bool AP_RSSI::http_poll_once(char *resp_buf, uint16_t resp_buf_len,
-                             uint16_t &resp_len)
+                             uint16_t &resp_len, HTTPStage &stage)
 {
     resp_len = 0;
+    stage = HTTPStage::CONNECT;
 
     // open a new TCP socket each poll. Cheap on lwIP and keeps the
     // worker simple; the Solo8's embedded web server does not document
@@ -675,6 +757,7 @@ bool AP_RSSI::http_poll_once(char *resp_buf, uint16_t resp_buf_len,
         return false;
     }
     sock->set_blocking(false);
+    stage = HTTPStage::SEND;
 
     char req[256];
     const int req_len = hal.util->snprintf(
@@ -708,6 +791,8 @@ bool AP_RSSI::http_poll_once(char *resp_buf, uint16_t resp_buf_len,
         }
     }
 
+    stage = HTTPStage::RECV;
+
     // drain the response until the server closes the socket or we fill
     // the buffer. recv() with a timeout blocks via pollin() internally.
     uint16_t used = 0;
@@ -734,7 +819,11 @@ bool AP_RSSI::http_poll_once(char *resp_buf, uint16_t resp_buf_len,
     resp_len = used;
 
     delete sock;
-    return used > 0;
+    if (used == 0) {
+        return false;
+    }
+    stage = HTTPStage::OK;
+    return true;
 }
 
 /*

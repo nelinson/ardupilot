@@ -112,12 +112,12 @@ bool AP_Networking_ChibiOS::init()
 #endif
 
     if (!allocate_buffers()) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "NET: Failed to allocate buffers");
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo NET: Failed to allocate buffers");
         return false;
     }
 
     if (!macInit()) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "NET: macInit failed");
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo NET: macInit failed");
         return false;
     }
 
@@ -367,6 +367,38 @@ void AP_Networking_ChibiOS::thread()
     tcpip_init(NULL, NULL);
 
     frontend.param.macaddr.get_address(thisif->hwaddr);
+    // If NET_MACADDR is left at all-zeros (the historical default), ARP can
+    // fail on some networks and users will see "00-00-00-00-00-00" neighbors
+    // and repeated TCP connect failures. Fall back to a locally administered
+    // unicast MAC derived from the board's unique ID so networking works out
+    // of the box.
+    bool mac_all_zero = true;
+    for (uint8_t i = 0; i < ETHARP_HWADDR_LEN; i++) {
+        mac_all_zero &= (thisif->hwaddr[i] == 0);
+    }
+    if (mac_all_zero) {
+        uint8_t sysid[50] {};
+        uint8_t sysid_len = 0;
+        uint8_t derived[ETHARP_HWADDR_LEN] {};
+        if (hal.util->get_system_id_unformatted(sysid, sysid_len) && sysid_len >= ETHARP_HWADDR_LEN) {
+            // 02:xx:xx:xx:xx:xx - locally administered, unicast
+            derived[0] = 0x02;
+            // mix in unique bytes; use the tail so different board families still vary
+            const uint8_t *p = &sysid[sysid_len - (ETHARP_HWADDR_LEN - 1)];
+            for (uint8_t i = 1; i < ETHARP_HWADDR_LEN; i++) {
+                derived[i] = p[i - 1];
+            }
+        } else {
+            // last resort: random but still valid (won't persist across reboots)
+            derived[0] = 0x02;
+            IGNORE_RETURN(hal.util->get_random_vals(&derived[1], ETHARP_HWADDR_LEN - 1));
+        }
+        memcpy(thisif->hwaddr, derived, ETHARP_HWADDR_LEN);
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
+                      "Colugo NET: NET_MACADDR is 00:00:00:00:00:00, using %02X:%02X:%02X:%02X:%02X:%02X",
+                      unsigned(derived[0]), unsigned(derived[1]), unsigned(derived[2]),
+                      unsigned(derived[3]), unsigned(derived[4]), unsigned(derived[5]));
+    }
 
     struct {
         ip4_addr_t ip, gateway, netmask;

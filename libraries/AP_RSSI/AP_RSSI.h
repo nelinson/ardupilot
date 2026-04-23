@@ -141,21 +141,38 @@ private:
     AP_Float  rssi_http_dbm_low;
     AP_Float  rssi_http_dbm_high;
 
+    // sub-stages of the HTTP poll so the diagnostic heartbeat can point
+    // at the exact step that's failing. Values match the trailing chars
+    // printed in the STATUSTEXT (C/S/R/P) so they are easy to grep for.
+    enum class HTTPStage : uint8_t {
+        OK       = 0,
+        CONNECT  = 1, // TCP connect_timeout() failed
+        SEND     = 2, // non-blocking send loop timed out
+        RECV     = 3, // connected+sent but zero bytes came back
+    };
+
     struct HTTPState {
         SocketAPM *sock;
         HAL_Semaphore sem;
         float    rssi_value;
         float    last_dbm;
         uint32_t last_reading_ms;
-        uint32_t poll_count;
-        uint32_t poll_errors;
+        uint32_t poll_count;     // HTTP GETs that returned a parseable, sigValid body
+        uint32_t poll_errors;    // TCP / HTTP transport failures (no body)
+        uint32_t connect_errors; // subset of poll_errors: connect stage failed
+        uint32_t send_errors;    // subset of poll_errors: send stage failed
+        uint32_t recv_errors;    // subset of poll_errors: recv returned 0 bytes
+        uint32_t parse_errors;   // body arrived but parse_solo8_json() rejected it
+        uint32_t sig_invalid;    // body parsed but sigValid == false
+        uint16_t last_http_bytes;// bytes received on most recent poll (0 on failure)
+        HTTPStage last_stage;    // stage of most recent poll (OK on success)
         bool     thread_started;
     } http_state;
 
     void http_init();
     void http_thread();
     bool http_poll_once(char *resp_buf, uint16_t resp_buf_len,
-                        uint16_t &resp_len);
+                        uint16_t &resp_len, HTTPStage &stage);
     bool parse_solo8_json(const char *body, uint16_t len,
                           float &out_dbm, bool &out_valid) const;
     float read_http_rssi();

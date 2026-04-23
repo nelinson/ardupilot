@@ -1,19 +1,24 @@
 # hwdef variant of the Holybro Pixhawk 6X with the native Ethernet PHY
 # (LAN8742A) powered ON, for AntennaTracker + external RSSI source on
-# a Solo8 receiver streaming UDP into the STM32H7 MAC.
+# a Solo8 receiver (Silvus /localrfstatus.json HTTP polling).
 #
 # All hardware is identical to Pixhawk6X. The base hwdef keeps ETH1 pins
-# mapped (which already causes chibios_hwdef.py to emit HAL_USE_MAC=TRUE
-# and AP_NETWORKING_ENABLED=1), but deliberately pulls PG15 HIGH to kill
-# the PHY power rail. This variant overrides that single line so the
-# stack comes up end-to-end.
+# mapped and already drives PG15 (Ethernet_PWR_EN) HIGH, which on the 6X
+# carrier *enables* the PHY power rail (the upstream comment saying HIGH
+# disables the PHY is incorrect -- verified empirically: stock Pixhawk6X
+# builds bring up the LAN8742A link LED, which can only happen if the
+# PHY is powered). We therefore inherit PG15 HIGH from the base hwdef
+# and do NOT override it.
+#
+# What this variant adds on top of stock Pixhawk6X:
+#   * Forces AP_NETWORKING_BACKEND_CHIBIOS so the lwIP stack + MAC are
+#     actually wired in at build time (stock Pixhawk6X has networking
+#     compiled out even though the HW is there).
+#   * Sensible static-IP defaults for a Solo8 ground setup.
+#   * Turns on the Solo8 / external-Ethernet-RSSI AP_RSSI backends via
+#     the single AP_SOLO8_RSSI_EXT_ENABLED master switch.
 
 include ../Pixhawk6X/hwdef.dat
-
-# override PHY power: Ethernet_PWR_EN is active-HIGH-disable on 6X, so
-# drive it LOW at boot to enable the PHY.
-undef PG15
-PG15 Ethernet_PWR_EN OUTPUT LOW
 
 # make the ChibiOS networking backend the active one
 define AP_NETWORKING_BACKEND_CHIBIOS 1
