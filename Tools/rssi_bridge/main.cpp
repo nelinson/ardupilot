@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2026 Colugo. All rights reserved.
+ *
+ * Proprietary work product of Colugo.
+ * Created by Nati Elinson.
+ */
 #include "http_client.h"
 #include "mavlink_sender.h"
 #include "rssi_processor.h"
