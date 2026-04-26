@@ -106,6 +106,14 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
     def default_frame(self):
         return "+"
 
+    def callisto_sitl_kwargs(self):
+        """Returns kwargs for a SITL commandline to fly the Callisto. Wipes params."""
+        return {
+            "defaults_filepath": self.model_defaults_filepath('Callisto'),
+            "model": "octa-quad:@ROMFS/models/Callisto.json",
+            "wipe": True
+        }
+
     def apply_defaultfile_parameters(self):
         # Copter passes in a defaults_filepath in place of applying
         # parameters afterwards.
@@ -421,7 +429,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         '''Test WP Arc functionality'''
         _ = self.load_and_start_mission("ArcWPMissionTest.txt")
 
-        self.wait_waypoint(0, 15, max_dist=10, timeout=400)
+        self.wait_waypoint(0, 15, max_dist_to_final_wp_m=10, timeout=400)
         self.progress("Check that vehicle flys an arc between WP 15 and 16")
         # A crude check, if the arc waypoint doesn't work then the copter will fly directly south between wp 15 and 16
         # If the arc waypoint works then we expect the copter to arc 180 deg in a CW direction meaning it will travel east
@@ -768,6 +776,72 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.wait_distance_to_home(10, 20)
         self.wait_disarmed(timeout=600)
         self.context_pop()
+
+    # test circle speed - should be constant degrees/second:
+    def CircleSpeed(self):
+        '''test the consistent-ground-speed-circling works'''
+        self.takeoff(10, mode='LOITER')
+        self.hover()  # circle mode uses throttle input
+        self.change_mode('CIRCLE')
+        tests = [
+            (10, 20),
+            (20, 10),
+        ]
+        for (radius_m, rate_degs) in tests:
+            self.set_parameters({
+                "CIRCLE_RADIUS_M": radius_m,
+                "CIRCLE_RATE": rate_degs,
+            })
+            self.change_mode('LOITER')
+            self.change_mode('CIRCLE')
+            expected_groundspeed = math.pi * 2 * radius_m * (rate_degs/360)
+            self.wait_groundspeed(
+                expected_groundspeed-0.1,
+                expected_groundspeed+0.1,
+                minimum_duration=10,
+            )
+        self.do_RTL()
+
+    # test copter-circle-speed lua script:
+    def LuaCopterCircleSpeed(self):
+        '''test the consistent-ground-speed-circling works'''
+        self.install_example_script_context('copter-circle-speed.lua')
+        self.set_parameters({
+            "SCR_ENABLE": 1,
+            "WP_ACC": 5,
+        })
+        self.reboot_sitl()
+
+        expected_groundspeed = 3
+        self.set_parameter("CSPD_SPEED", expected_groundspeed)
+        radius_m = self.get_parameter('CIRCLE_RADIUS_M')
+        circle_point = self.offset_location_heading_distance(
+            self.mav.location(),
+            270,  # see SITL_START_LOCATION, FIXME!
+            radius_m
+        )
+
+        self.change_mode('LOITER')
+        self.wait_ready_to_arm()
+
+        self.takeoff(10, mode='LOITER')
+        self.hover()  # circle mode uses throttle input
+        self.change_mode('CIRCLE')
+
+        self.wait_groundspeed(
+            expected_groundspeed-0.2,
+            expected_groundspeed+0.2,
+            minimum_duration=10,
+        )
+        self.set_rc(2, 1550)  # pilot increases radius
+        self.wait_distance_to_location(circle_point, radius_m*2-1, radius_m*2+1)
+        self.set_rc(2, 1500)
+        self.wait_groundspeed(
+            expected_groundspeed-0.2,
+            expected_groundspeed+0.2,
+            minimum_duration=10,
+        )
+        self.do_RTL()
 
     # enter RTL mode and wait for the vehicle to disarm
     def do_RTL(self, distance_min=None, check_alt=True, distance_max=10, timeout=250, quiet=False):
@@ -4784,7 +4858,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         num_wp = self.get_mission_count()
         accepted_indices = [0, 1, num_wp-1]
-        failed_indices = [-1, num_wp]
+        failed_indices = [num_wp]
 
         for seq in accepted_indices:
             self.run_cmd(mavutil.mavlink.MAV_CMD_DO_SET_MISSION_CURRENT,
@@ -4792,11 +4866,22 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                          timeout=1,
                          want_result=mavutil.mavlink.MAV_RESULT_ACCEPTED)
 
+        # param1=-1 means "don't change current item" (reset-only); accepted
+        self.run_cmd(mavutil.mavlink.MAV_CMD_DO_SET_MISSION_CURRENT,
+                     p1=-1,
+                     timeout=1,
+                     want_result=mavutil.mavlink.MAV_RESULT_ACCEPTED)
+
         for seq in failed_indices:
             self.run_cmd(mavutil.mavlink.MAV_CMD_DO_SET_MISSION_CURRENT,
                          p1=seq,
                          timeout=1,
                          want_result=mavutil.mavlink.MAV_RESULT_FAILED)
+
+        self.run_cmd(mavutil.mavlink.MAV_CMD_DO_SET_MISSION_CURRENT,
+                     p1=-2,
+                     timeout=1,
+                     want_result=mavutil.mavlink.MAV_RESULT_DENIED)
 
     def InvalidJumpTags(self):
         '''Verify the behaviour when selecting invalid jump tags.'''
@@ -7805,7 +7890,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.context_pop()
         self.reboot_sitl()
 
-    def hover_and_check_matched_frequency(self, dblevel=-15, minhz=200, maxhz=300, fftLength=32, peakhz=None):
+    def hover_and_check_matched_frequency(self, *, dblevel=-15, minhz=200, maxhz=300, fftLength=32, peakhz=None):
         '''do a simple up-and-down test flight with current vehicle state.
         Check that the onboard filter comes up with the same peak-frequency that
         post-processing does.'''
@@ -7994,7 +8079,12 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         })
 
         self.reboot_sitl()
-        freq = self.hover_and_check_matched_frequency(-15, 100, 250, 64)
+        freq = self.hover_and_check_matched_frequency(
+            dblevel=-15,
+            minhz=100,
+            maxhz=250,
+            fftLength=64,
+        )
 
         # Step 2: add a second harmonic and check the first is still tracked
         self.start_subtest("Add a fixed frequency harmonic at twice the hover frequency "
@@ -8007,7 +8097,13 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         })
         self.reboot_sitl()
 
-        self.hover_and_check_matched_frequency(-15, 100, 250, 64, None)
+        self.hover_and_check_matched_frequency(
+            dblevel=-15,
+            minhz=100,
+            maxhz=250,
+            fftLength=64,
+            peakhz=None,
+        )
 
         # Step 3: switch harmonics mid flight and check for tracking
         self.start_subtest("Switch harmonics mid flight and check the right harmonic is found")
@@ -8120,7 +8216,13 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.reboot_sitl()
 
         # find a motor peak
-        self.hover_and_check_matched_frequency(-15, 100, 350, 128, 250)
+        self.hover_and_check_matched_frequency(
+            dblevel=-15,
+            minhz=100,
+            maxhz=350,
+            fftLength=128,
+            peakhz=250,
+        )
 
         # Step 1b: run the same test with an FFT length of 256 which is needed to flush out a
         # whole host of bugs related to uint8_t. This also tests very accurately the frequency resolution
@@ -8130,7 +8232,13 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.reboot_sitl()
 
         # find a motor peak
-        self.hover_and_check_matched_frequency(-15, 100, 350, 256, 250)
+        self.hover_and_check_matched_frequency(
+            dblevel=-15,
+            minhz=100,
+            maxhz=350,
+            fftLength=256,
+            peakhz=250,
+        )
         self.set_parameter("FFT_WINDOW_SIZE", 128)
 
         # Step 2: inject actual motor noise and use the standard length FFT to track it
@@ -8145,7 +8253,12 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         })
 
         self.reboot_sitl()
-        freq = self.hover_and_check_matched_frequency(-15, 100, 250, 32)
+        freq = self.hover_and_check_matched_frequency(
+            dblevel=-15,
+            minhz=100,
+            maxhz=250,
+            fftLength=32,
+        )
 
         self.set_parameter("SIM_VIB_MOT_MULT", 1.)
 
@@ -9545,9 +9658,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         '''Test wind estimation and baro position error compensation'''
         self.customise_SITL_commandline(
             [],
-            defaults_filepath=self.model_defaults_filepath('Callisto'),
-            model="octa-quad:@ROMFS/models/Callisto.json",
-            wipe=True,
+            **self.callisto_sitl_kwargs()
         )
         wind_spd_truth = 8.0
         wind_dir_truth = 90.0
@@ -12033,9 +12144,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         '''Test Callisto'''
         self.customise_SITL_commandline(
             [],
-            defaults_filepath=self.model_defaults_filepath('Callisto'),
-            model="octa-quad:@ROMFS/models/Callisto.json",
-            wipe=True,
+            **self.callisto_sitl_kwargs()
         )
         self.takeoff(10)
         self.do_RTL()
@@ -15124,12 +15233,12 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.set_rc(1, 1200)
         self.delay_sim_time(1)  # build up some pilot desired stuff
         self.change_mode('AUTO')
-        self.wait_waypoint(2, 2, max_dist=3)
+        self.wait_waypoint(2, 2, max_dist_to_final_wp_m=3)
         self.set_parameters({
             'SIM_RC_FAIL': 1,
         })
 #        self.set_rc(1, 1500)  # note we are still in RC fail!
-        self.wait_waypoint(3, 3, max_dist=3)
+        self.wait_waypoint(3, 3, max_dist_to_final_wp_m=3)
         self.assert_mode_is('AUTO')
         self.change_mode('LOITER')
         self.wait_groundspeed(0, 0.1, minimum_duration=30, timeout=450)
@@ -16099,9 +16208,7 @@ RTL_ALT_M 111
             self.customise_SITL_commandline([
                 "--serial5=mcast:",
             ],
-                model="octa-quad:@ROMFS/models/Callisto.json",
-                defaults_filepath=self.model_defaults_filepath('Callisto'),
-                wipe=True,
+                **self.callisto_sitl_kwargs()
             )
 
             self.set_parameters({
@@ -16192,9 +16299,7 @@ RTL_ALT_M 111
         '''test the config_profiles.lua example script'''
         self.customise_SITL_commandline(
             [],
-            defaults_filepath=self.model_defaults_filepath('Callisto'),
-            model="octa-quad:@ROMFS/models/Callisto.json",
-            wipe=True,
+            **self.callisto_sitl_kwargs()
         )
         self.install_example_script_context("config_profiles.lua")
         self.set_parameters({
@@ -16557,6 +16662,8 @@ return update, 1000
             self.ScriptCopterPosOffsets,
             self.MountSolo,
             self.MountSiyiZT30,
+            self.CircleSpeed,
+            self.LuaCopterCircleSpeed,
             self.MountTopotek,
             self.MountViewPro,
             self.MountAVTCM62,

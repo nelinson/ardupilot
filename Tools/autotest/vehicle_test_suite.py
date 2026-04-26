@@ -8392,7 +8392,7 @@ class TestSuite(abc.ABC):
                       wpnum_start,
                       wpnum_end,
                       allow_skip=True,
-                      max_dist=2,
+                      max_dist_to_final_wp_m=2,
                       timeout=400,
                       ignore_RTL_mode_change=False,
                       ignore_MANUAL_mode_change=False,
@@ -8426,7 +8426,7 @@ class TestSuite(abc.ABC):
 
             seq = self.mav.waypoint_current()
 
-            wp_dist = m.wp_dist
+            wp_dist_m = m.wp_dist
 
             # if we changed mode, fail
             if not self.mode_is('AUTO'):
@@ -8440,9 +8440,9 @@ class TestSuite(abc.ABC):
                     raise WaitWaypointTimeout(f'Exited {mode} mode to {new_mode_str} ignore={ignore_RTL_mode_change}')
 
             if self.get_sim_time_cached() - last_wp_msg > 1:
-                self.progress("WP %u (wp_dist=%u Alt=%.02f), current_wp: %u,"
+                self.progress("WP %u (wp_dist_m=%u Alt=%.02f), current_wp: %u,"
                               "wpnum_end: %u" %
-                              (seq, wp_dist, vfr_hud_alt, current_wp, wpnum_end))
+                              (seq, wp_dist_m, vfr_hud_alt, current_wp, wpnum_end))
                 last_wp_msg = self.get_sim_time_cached()
             if seq == current_wp+1 or (seq > current_wp+1 and allow_skip):
                 self.progress("WW: Starting new waypoint %u" % seq)
@@ -8452,7 +8452,7 @@ class TestSuite(abc.ABC):
                 # the right seqnum for end of mission
             # if current_wp == wpnum_end or (current_wp == wpnum_end-1 and
             #                                wp_dist < 2):
-            if current_wp == wpnum_end and wp_dist < max_dist:
+            if current_wp == wpnum_end and wp_dist_m < max_dist_to_final_wp_m:
                 self.progress("Reached final waypoint %u" % seq)
                 return True
             if seq >= 255:
@@ -14647,12 +14647,10 @@ switch value'''
             if distance > 1:
                 raise NotAchievedException(f"gps type {name} misbehaving")
 
-    def assert_gps_satellite_count(self, messagename, count):
+    def wait_gps_satellite_count(self, messagename, count, timeout):
+        """Wait for a GPS message to report a specific satellite count."""
         self.drain_mav()
-        m = self.assert_receive_message(messagename)
-        if m.satellites_visible != count:
-            raise NotAchievedException("Expected %u sats, got %u" %
-                                       (count, m.satellites_visible))
+        self.wait_message_field_values(messagename, {"satellites_visible": count}, timeout=timeout)
 
     def check_attitudes_match(self):
         '''make sure ahrs2 and simstate and ATTTIUDE_QUATERNION all match'''
@@ -14751,16 +14749,17 @@ switch value'''
         if m.fix_type != mavutil.mavlink.GPS_FIX_TYPE_RTK_FIXED:
             raise NotAchievedException("Incorrect fix type")
 
+        GPS_NSATS_TIMEOUT_SEC = 3.0
         self.start_subtest("Check parameters are per-GPS")
         self.assert_parameter_value("SIM_GPS1_NUMSATS", 10)
-        self.assert_gps_satellite_count("GPS_RAW_INT", 10)
+        self.wait_gps_satellite_count("GPS_RAW_INT", 10, GPS_NSATS_TIMEOUT_SEC)
         self.set_parameter("SIM_GPS1_NUMSATS", 13)
-        self.assert_gps_satellite_count("GPS_RAW_INT", 13)
+        self.wait_gps_satellite_count("GPS_RAW_INT", 13, GPS_NSATS_TIMEOUT_SEC)
 
         self.assert_parameter_value("SIM_GPS2_NUMSATS", 10)
-        self.assert_gps_satellite_count("GPS2_RAW", 10)
+        self.wait_gps_satellite_count("GPS2_RAW", 10, GPS_NSATS_TIMEOUT_SEC)
         self.set_parameter("SIM_GPS2_NUMSATS", 12)
-        self.assert_gps_satellite_count("GPS2_RAW", 12)
+        self.wait_gps_satellite_count("GPS2_RAW", 12, GPS_NSATS_TIMEOUT_SEC)
 
         self.start_subtest("check that GLOBAL_POSITION_INT fails over")
         m = self.assert_receive_message("GLOBAL_POSITION_INT")
