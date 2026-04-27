@@ -581,6 +581,7 @@ void AP_RSSI::http_init()
     http_state.rssi_value = 0.0f;
     http_state.last_dbm = 0.0f;
     http_state.last_reading_ms = 0;
+    http_state.poll_success = 0;
     http_state.poll_count = 0;
     http_state.poll_errors = 0;
     http_state.connect_errors = 0;
@@ -644,6 +645,7 @@ void AP_RSSI::http_thread()
             default: break;
             }
         } else {
+            http_state.poll_success++;
             http_state.last_http_bytes = resp_len;
 
             // locate the start of the body (after "\r\n\r\n"); if not
@@ -705,22 +707,22 @@ void AP_RSSI::http_thread()
             // R=recv-empty). "last" shows the stage of the most recent
             // poll as a single character so we can tell the *current*
             // failure mode at a glance.
-            const char stage_c =
-                (http_state.last_stage == HTTPStage::OK)      ? 'O' :
-                (http_state.last_stage == HTTPStage::CONNECT) ? 'C' :
-                (http_state.last_stage == HTTPStage::SEND)    ? 'S' :
-                (http_state.last_stage == HTTPStage::RECV)    ? 'R' : '?';
+            const char* stage_s =
+                (http_state.last_stage == HTTPStage::OK)      ? "OK" :
+                (http_state.last_stage == HTTPStage::CONNECT) ? "CON" :
+                (http_state.last_stage == HTTPStage::SEND)    ? "SND" :
+                (http_state.last_stage == HTTPStage::RECV)    ? "RCV" : "?";
+            // Legend:
+            //   OK/CON/SND/RCV = stage of most recent poll (OK/CONNECT/SEND/RECV)
+            //           = scaled RSSI (0..1)
+            //   ok      = transport OK polls (response body received)
+            //   err     = transport failures (connect/send/recv)
             GCS_SEND_TEXT(MAV_SEVERITY_INFO,
-                          "Colugo RSSI_HTTP ok=%lu C=%lu S=%lu R=%lu prs=%lu nv=%lu last=%c B=%u rssi=%.2f",
-                          (unsigned long)http_state.poll_count,
-                          (unsigned long)http_state.connect_errors,
-                          (unsigned long)http_state.send_errors,
-                          (unsigned long)http_state.recv_errors,
-                          (unsigned long)http_state.parse_errors,
-                          (unsigned long)http_state.sig_invalid,
-                          stage_c,
-                          unsigned(http_state.last_http_bytes),
-                          double(snap_rssi));
+                          "RSSI_HTTP %s %.2f ok:%lu err:%lu",
+                          stage_s,
+                          double(snap_rssi),
+                          (unsigned long)http_state.poll_success,
+                          (unsigned long)http_state.poll_errors);
             (void)snap_dbm;
         }
 

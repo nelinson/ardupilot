@@ -157,6 +157,7 @@ private:
         float    rssi_value;
         float    last_dbm;
         uint32_t last_reading_ms;
+        uint32_t poll_success;   // HTTP polls that got a response body (transport OK)
         uint32_t poll_count;     // HTTP GETs that returned a parseable, sigValid body
         uint32_t poll_errors;    // TCP / HTTP transport failures (no body)
         uint32_t connect_errors; // subset of poll_errors: connect stage failed
