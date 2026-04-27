@@ -226,10 +226,12 @@ AOPT =
 TOPT = -mthumb -DTHUMB
 
 # Define C warning options here
-CWARN = -Wall -Wextra -Wundef -Wstrict-prototypes -Werror
+# GCC 12+ -Waddress is promoted under -Wextra; ChibiOS MACv2 compares array
+# symbols to NULL (always false). Keep -Werror but do not fail the build.
+CWARN = -Wall -Wextra -Wundef -Wstrict-prototypes -Werror -Wno-error=address
 
 # Define C++ warning options here
-CPPWARN = -Wall -Wextra -Wundef -Werror
+CPPWARN = -Wall -Wextra -Wundef -Werror -Wno-error=address
 
 #
 # Compiler settings
