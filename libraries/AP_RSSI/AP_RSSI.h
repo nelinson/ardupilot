@@ -156,6 +156,9 @@ private:
         HAL_Semaphore sem;
         float    rssi_value;
         float    last_dbm;
+        float    last_sig_a_dbm;
+        float    last_sig_b_dbm;
+        bool     last_sig_valid;
         uint32_t last_reading_ms;
         uint32_t poll_success;   // HTTP polls that got a response body (transport OK)
         uint32_t poll_count;     // HTTP GETs that returned a parseable, sigValid body
@@ -175,7 +178,8 @@ private:
     bool http_poll_once(char *resp_buf, uint16_t resp_buf_len,
                         uint16_t &resp_len, HTTPStage &stage);
     bool parse_solo8_json(const char *body, uint16_t len,
-                          float &out_dbm, bool &out_valid) const;
+                          float &out_dbm, bool &out_valid,
+                          float &out_sig_a_dbm, float &out_sig_b_dbm) const;
     float read_http_rssi();
 #endif  // AP_RSSI_HTTP_ENABLED
 

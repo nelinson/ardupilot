@@ -580,6 +580,9 @@ void AP_RSSI::http_init()
     http_state.sock = nullptr;
     http_state.rssi_value = 0.0f;
     http_state.last_dbm = 0.0f;
+    http_state.last_sig_a_dbm = 0.0f;
+    http_state.last_sig_b_dbm = 0.0f;
+    http_state.last_sig_valid = false;
     http_state.last_reading_ms = 0;
     http_state.poll_success = 0;
     http_state.poll_count = 0;
@@ -660,7 +663,9 @@ void AP_RSSI::http_thread()
 
             float dbm = 0.0f;
             bool  valid = false;
-            const bool parsed = parse_solo8_json(body, body_len, dbm, valid);
+            float sig_a_dbm = 0.0f;
+            float sig_b_dbm = 0.0f;
+            const bool parsed = parse_solo8_json(body, body_len, dbm, valid, sig_a_dbm, sig_b_dbm);
             if (!parsed) {
                 http_state.parse_errors++;
             } else if (!valid) {
@@ -670,6 +675,9 @@ void AP_RSSI::http_thread()
                 http_state.sig_invalid++;
                 WITH_SEMAPHORE(http_state.sem);
                 http_state.last_dbm = dbm;
+                http_state.last_sig_a_dbm = sig_a_dbm;
+                http_state.last_sig_b_dbm = sig_b_dbm;
+                http_state.last_sig_valid = valid;
             } else {
                 const float lo = rssi_http_dbm_low.get();
                 const float hi = rssi_http_dbm_high.get();
@@ -677,6 +685,9 @@ void AP_RSSI::http_thread()
 
                 WITH_SEMAPHORE(http_state.sem);
                 http_state.last_dbm = dbm;
+                http_state.last_sig_a_dbm = sig_a_dbm;
+                http_state.last_sig_b_dbm = sig_b_dbm;
+                http_state.last_sig_valid = valid;
                 http_state.rssi_value = scaled;
                 http_state.last_reading_ms = AP_HAL::millis();
                 http_state.poll_count++;
@@ -697,10 +708,16 @@ void AP_RSSI::http_thread()
             last_heartbeat_ms = now;
             float snap_dbm = 0.0f;
             float snap_rssi = 0.0f;
+            float snap_sig_a_dbm = 0.0f;
+            float snap_sig_b_dbm = 0.0f;
+            bool  snap_sig_valid = false;
             {
                 WITH_SEMAPHORE(http_state.sem);
                 snap_dbm  = http_state.last_dbm;
                 snap_rssi = http_state.rssi_value;
+                snap_sig_a_dbm = http_state.last_sig_a_dbm;
+                snap_sig_b_dbm = http_state.last_sig_b_dbm;
+                snap_sig_valid = http_state.last_sig_valid;
             }
             // Single compact line per 10s. Staged error counters let us
             // see *which* step is failing when B=0 (C=connect S=send
@@ -723,6 +740,13 @@ void AP_RSSI::http_thread()
                           double(snap_rssi),
                           (unsigned long)http_state.poll_success,
                           (unsigned long)http_state.poll_errors);
+            // Second line: raw Solo8 fields (low rate) for calibration/debug.
+            // Keep it short to avoid STATUSTEXT truncation.
+            GCS_SEND_TEXT(MAV_SEVERITY_INFO,
+                          "RSSI_HTTP RX valid:%u sigA:%.1f sigB:%.1f",
+                          snap_sig_valid ? 1U : 0U,
+                          double(snap_sig_a_dbm),
+                          double(snap_sig_b_dbm));
             (void)snap_dbm;
         }
 
@@ -855,7 +879,8 @@ bool AP_RSSI::http_poll_once(char *resp_buf, uint16_t resp_buf_len,
       }
 */
 bool AP_RSSI::parse_solo8_json(const char *body, uint16_t len,
-                               float &out_dbm, bool &out_valid) const
+                               float &out_dbm, bool &out_valid,
+                               float &out_sig_a_dbm, float &out_sig_b_dbm) const
 {
     if (body == nullptr || len < 32) {
         return false;
@@ -902,6 +927,8 @@ bool AP_RSSI::parse_solo8_json(const char *body, uint16_t len,
     if (!find_scalar_number("\"sigLevB0\"", b)) {
         return false;
     }
+    out_sig_a_dbm = a;
+    out_sig_b_dbm = b;
 
     // sigValid is a boolean literal inside LocalDemodStatus.
     out_valid = false;
