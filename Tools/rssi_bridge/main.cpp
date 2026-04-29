@@ -181,25 +181,93 @@ static bool parse_args(int argc, char** argv, Options& opt)
     return true;
 }
 
-static bool parse_rssi_from_json(const std::string& body,
-                                float& out_sig_a,
-                                float& out_sig_b,
-                                bool& out_sig_valid,
-                                std::string& out_error)
+static bool discover_aircraft_node_id_from_status_json(const std::string& body,
+                                                       int& out_local_node_id,
+                                                       int& out_aircraft_node_id,
+                                                       std::string& out_error)
+{
+    out_error.clear();
+    try {
+        const auto j = nlohmann::json::parse(body);
+        const auto& mesh = j.at("Status").at("Mesh1");
+        out_local_node_id = mesh.at("NodeId").get<int>();
+
+        const auto& rs = mesh.at("RemoteStatus");
+        for (size_t i = 0; i < rs.size(); i++) {
+            const auto& entry = rs.at(i);
+            if (!entry.contains("timeout") || !entry.at("timeout").is_boolean() || !entry.at("timeout").get<bool>()) {
+                continue;
+            }
+            if (!entry.contains("UnitStatus") || entry.at("UnitStatus").is_null()) {
+                continue;
+            }
+            const auto& us = entry.at("UnitStatus");
+            if (!us.contains("nodeId")) {
+                continue;
+            }
+            const int node_id = us.at("nodeId").get<int>();
+            if (node_id != out_local_node_id) {
+                out_aircraft_node_id = static_cast<int>(i);
+                return true;
+            }
+        }
+        out_error = "no aircraft nodeId found in RemoteStatus";
+        return false;
+    } catch (const std::exception& e) {
+        out_error = e.what();
+        return false;
+    }
+}
+
+static bool parse_snr_from_localrfstatus_json(const std::string& body,
+                                             int aircraft_node_id,
+                                             float& out_snr_db,
+                                             bool& out_sig_valid,
+                                             std::string& out_error)
 {
     out_error.clear();
     try {
         const auto j = nlohmann::json::parse(body);
         const auto& s = j.at("LocalRfStatus").at("LocalDemodStatus");
-
-        out_sig_a = s.at("sigLevA0").get<float>();
-        out_sig_b = s.at("sigLevB0").get<float>();
         out_sig_valid = s.at("sigValid").get<bool>();
+
+        const auto& snr = s.at("SNR");
+        if (!snr.is_array()) {
+            out_error = "SNR is not an array";
+            return false;
+        }
+        if (aircraft_node_id < 0 || aircraft_node_id >= static_cast<int>(snr.size())) {
+            out_error = "aircraft_node_id out of range";
+            return false;
+        }
+        out_snr_db = snr.at(aircraft_node_id).get<float>();
         return true;
     } catch (const std::exception& e) {
         out_error = e.what();
         return false;
     }
+}
+
+static std::string url_dirname(const std::string& url)
+{
+    const auto pos = url.find_last_of('/');
+    if (pos == std::string::npos) {
+        return url;
+    }
+    return url.substr(0, pos);
+}
+
+static float scale_snr_to_unit(float snr_db, float snr_lo, float snr_hi)
+{
+    // Sentinel -3.0 means "no node / no link"
+    if (snr_db < 0.0f) {
+        return 0.0f;
+    }
+    if (snr_hi <= snr_lo) {
+        return 0.0f;
+    }
+    const float x = (snr_db - snr_lo) / (snr_hi - snr_lo);
+    return std::max(0.0f, std::min(1.0f, x));
 }
 
 int main(int argc, char** argv)
@@ -232,6 +300,16 @@ int main(int argc, char** argv)
         std::cerr << "Dry-run mode: not opening serial (" << opt.serial_device << ")\n";
     }
 
+    // Node discovery (cached, rediscovered on no-link)
+    int local_node_id = -1;
+    int aircraft_node_id = -1;
+    const std::string base = url_dirname(opt.url);
+    const std::string status_url = base + "/status.json";
+
+    // Repurpose the old dBm scaling range as SNR scaling.
+    const float SNR_LO = 3.1f;
+    const float SNR_HI = 20.0f;
+
     while (!g_should_exit) {
         const auto t0 = std::chrono::steady_clock::now();
 
@@ -247,38 +325,60 @@ int main(int argc, char** argv)
             }
         }
 
+        if (aircraft_node_id < 0) {
+            std::string sbody;
+            if (!http.get(status_url, auth_user, auth_pass, opt.http_timeout_ms, sbody, err)) {
+                std::cerr << "HTTP status.json error: " << err << "\n";
+            } else {
+                std::string jerr;
+                int local = -1;
+                int ac = -1;
+                if (!discover_aircraft_node_id_from_status_json(sbody, local, ac, jerr)) {
+                    std::cerr << "status.json parse/discovery error: " << jerr << "\n";
+                } else {
+                    local_node_id = local;
+                    aircraft_node_id = ac;
+                    std::cerr << "Discovered aircraft node id: " << aircraft_node_id << " (local " << local_node_id << ")\n";
+                }
+            }
+        }
+
         std::string body;
         if (!http.get(opt.url, auth_user, auth_pass, opt.http_timeout_ms, body, err)) {
-            std::cerr << "HTTP error: " << err << "\n";
-        } else {
-            float a = 0.0f;
-            float b = 0.0f;
+            std::cerr << "HTTP localrfstatus.json error: " << err << "\n";
+        } else if (aircraft_node_id >= 0) {
+            float snr_db = -3.0f;
             bool valid = false;
             std::string jerr;
-            if (!parse_rssi_from_json(body, a, b, valid, jerr)) {
-                std::cerr << "JSON error: " << jerr << "\n";
-            } else if (!valid) {
-                // Skip iteration when signal invalid.
+            if (!parse_snr_from_localrfstatus_json(body, aircraft_node_id, snr_db, valid, jerr)) {
+                std::cerr << "localrfstatus.json parse error: " << jerr << "\n";
             } else {
-                float rssi_dbm = std::max(a, b);
+                const float scaled = scale_snr_to_unit(snr_db, SNR_LO, SNR_HI);
+                const bool link_ok = valid && (snr_db > 3.1f);
+                float scaled_used = scaled;
                 if (opt.enable_ema) {
-                    float filtered = rssi_dbm;
-                    if (rssi_proc.ema_update(rssi_dbm, opt.ema_alpha, filtered)) {
-                        rssi_dbm = filtered;
+                    float filtered = scaled_used;
+                    if (rssi_proc.ema_update(scaled_used, opt.ema_alpha, filtered)) {
+                        scaled_used = filtered;
                     }
                 }
+                const uint8_t rssi = static_cast<uint8_t>(std::max(0, std::min(254, int(scaled_used * 254.0f + 0.5f))));
+                const int node_snapshot = aircraft_node_id;
 
-                const uint8_t rssi = RssiProcessor::dbm_to_mavlink_rssi(rssi_dbm);
+                if (!link_ok) {
+                    // Force re-discovery on link loss.
+                    aircraft_node_id = -1;
+                }
 
                 if (opt.dry_run) {
-                    std::cout << "[A:" << a << "][B:" << b << "][RSSI:" << static_cast<int>(rssi) << "]\n";
+                    std::cout << "[N:" << node_snapshot << "][SNR:" << snr_db << "][RSSI:" << int(rssi) << "]\n";
                 } else {
                     std::string werr;
                     if (!mav.send_radio(port, rssi, werr)) {
                         std::cerr << "Serial write failed: " << werr << " (reconnecting)\n";
                         port.close();
                     } else {
-                        std::cout << "[A:" << a << "][B:" << b << "][RSSI:" << static_cast<int>(rssi) << "]\n";
+                        std::cout << "[N:" << node_snapshot << "][SNR:" << snr_db << "][RSSI:" << int(rssi) << "]\n";
                     }
                 }
             }

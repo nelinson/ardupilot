@@ -131,9 +131,9 @@ private:
 
 #if AP_RSSI_HTTP_ENABLED
     // Solo8 HTTP/JSON backend. A worker thread periodically issues
-    // HTTP GET http://<ip>:<port>/localrfstatus.json, parses the three
-    // fields we care about (sigLevA0, sigLevB0, sigValid) and publishes
-    // a scaled 0..1 value under a semaphore.
+    // HTTP GET http://<ip>:<port>/localrfstatus.json and /status.json,
+    // discovers the aircraft node-id, reads per-node SNR (dB) and scales
+    // it to a 0..1 value under a semaphore.
     AP_Networking_IPV4 rssi_http_ip{"192.168.0.27"};
     AP_Int16  rssi_http_port;
     AP_Int8   rssi_http_rate_hz;
@@ -155,10 +155,23 @@ private:
         SocketAPM *sock;
         HAL_Semaphore sem;
         float    rssi_value;
-        float    last_dbm;
+        // last values received from /localrfstatus.json for diagnostics.
+        // "sigLevA0/B0" are noise-floor on DTC/Solo8; we keep only per-node
+        // values below, but retain these variable names for log continuity.
         float    last_sig_a_dbm;
         float    last_sig_b_dbm;
         bool     last_sig_valid;
+
+        // per-node values for the currently tracked aircraft node
+        float    last_snr_db;
+        float    last_siglev_a_dbm;
+
+        // cached mesh node IDs
+        int8_t   local_node_id;
+        int8_t   aircraft_node_id;
+        char     local_unit_name[17];
+        char     aircraft_unit_name[17];
+        uint32_t last_status_discovery_ms;
         uint32_t last_reading_ms;
         uint32_t poll_success;   // HTTP polls that got a response body (transport OK)
         uint32_t poll_count;     // HTTP GETs that returned a parseable, sigValid body
@@ -166,20 +179,34 @@ private:
         uint32_t connect_errors; // subset of poll_errors: connect stage failed
         uint32_t send_errors;    // subset of poll_errors: send stage failed
         uint32_t recv_errors;    // subset of poll_errors: recv returned 0 bytes
-        uint32_t parse_errors;   // body arrived but parse_solo8_json() rejected it
+        uint32_t parse_errors;   // body arrived but parse_localrfstatus_json() rejected it
         uint32_t sig_invalid;    // body parsed but sigValid == false
+        uint32_t status_poll_ok;
+        uint32_t status_poll_err;
+        uint32_t status_parse_err;
         uint16_t last_http_bytes;// bytes received on most recent poll (0 on failure)
         HTTPStage last_stage;    // stage of most recent poll (OK on success)
+        HTTPStage last_status_stage;
         bool     thread_started;
     } http_state;
 
     void http_init();
     void http_thread();
-    bool http_poll_once(char *resp_buf, uint16_t resp_buf_len,
+    bool http_poll_once(const char *path,
+                        char *resp_buf, uint16_t resp_buf_len,
                         uint16_t &resp_len, HTTPStage &stage);
-    bool parse_solo8_json(const char *body, uint16_t len,
-                          float &out_dbm, bool &out_valid,
-                          float &out_sig_a_dbm, float &out_sig_b_dbm) const;
+    bool parse_status_json_for_aircraft_node_id(const char *body, uint16_t len,
+                                                int8_t &out_local_node_id,
+                                                int8_t &out_aircraft_node_id,
+                                                char *out_local_unit_name, uint8_t out_local_unit_name_len,
+                                                char *out_aircraft_unit_name, uint8_t out_aircraft_unit_name_len) const;
+    bool parse_localrfstatus_json_for_node_metrics(const char *body, uint16_t len,
+                                                   int8_t aircraft_node_id,
+                                                   float &out_snr_db,
+                                                   float &out_siglev_a_dbm,
+                                                   float &out_noise_a0_dbm,
+                                                   float &out_noise_b0_dbm,
+                                                   bool &out_sig_valid) const;
     float read_http_rssi();
 #endif  // AP_RSSI_HTTP_ENABLED
 

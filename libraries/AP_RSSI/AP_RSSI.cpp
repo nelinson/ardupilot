@@ -28,6 +28,7 @@
 #include <AP_Networking/AP_Networking.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #endif
 
 extern const AP_HAL::HAL& hal;
@@ -167,20 +168,20 @@ const AP_Param::GroupInfo AP_RSSI::var_info[] = {
     AP_GROUPINFO("HTTP_LOSS", 14, AP_RSSI, rssi_http_loss_ms, 1500),
 
     // @Param: HTTP_DBM_LO
-    // @DisplayName: dBm mapped to 0% RSSI (Solo8)
-    // @Description: Signal level (dBm) that is treated as weakest (0.0 / 0%). Used only when RSSI_TYPE=7.
-    // @Range: -150 0
-    // @Units: dBm
+    // @DisplayName: SNR mapped to 0% RSSI (Solo8)
+    // @Description: SNR (dB) treated as weakest (0.0 / 0%) when RSSI_TYPE=7. This parameter name is historic; it is repurposed as SNR_LO for DTC/Solo8 per-node SNR scaling.
+    // @Range: 0 50
+    // @Units: dB
     // @User: Advanced
-    AP_GROUPINFO("HTTP_DBM_LO", 15, AP_RSSI, rssi_http_dbm_low, -90.0f),
+    AP_GROUPINFO("HTTP_DBM_LO", 15, AP_RSSI, rssi_http_dbm_low, 3.1f),
 
     // @Param: HTTP_DBM_HI
-    // @DisplayName: dBm mapped to 100% RSSI (Solo8)
-    // @Description: Signal level (dBm) that is treated as strongest (1.0 / 100%). Used only when RSSI_TYPE=7.
-    // @Range: -120 20
-    // @Units: dBm
+    // @DisplayName: SNR mapped to 100% RSSI (Solo8)
+    // @Description: SNR (dB) treated as strongest (1.0 / 100%) when RSSI_TYPE=7. Values above this are clipped. This parameter name is historic; it is repurposed as SNR_HI for DTC/Solo8 per-node SNR scaling.
+    // @Range: 0 50
+    // @Units: dB
     // @User: Advanced
-    AP_GROUPINFO("HTTP_DBM_HI", 16, AP_RSSI, rssi_http_dbm_high, -30.0f),
+    AP_GROUPINFO("HTTP_DBM_HI", 16, AP_RSSI, rssi_http_dbm_high, 20.0f),
 #endif  // AP_RSSI_HTTP_ENABLED
 
     AP_GROUPEND
@@ -272,6 +273,23 @@ float AP_RSSI::read_receiver_link_quality()
     if (RssiType(rssi_type.get()) == RssiType::RECEIVER) {
         return RC_Channels::get_receiver_link_quality();
     }
+#if AP_RSSI_HTTP_ENABLED
+    if (RssiType(rssi_type.get()) == RssiType::SOLO8_HTTP) {
+        WITH_SEMAPHORE(http_state.sem);
+        // return -1 if we have no recent valid link
+        if (http_state.last_reading_ms == 0) {
+            return -1;
+        }
+        const uint32_t age = AP_HAL::millis() - http_state.last_reading_ms;
+        const int16_t loss_param = rssi_http_loss_ms.get();
+        const uint32_t loss = uint32_t(loss_param < 200 ? 200 : loss_param);
+        if (age > loss) {
+            return -1;
+        }
+        // Raw SNR in dB for the tracked node.
+        return http_state.last_snr_db;
+    }
+#endif
     return -1;
 }
 
@@ -541,12 +559,14 @@ float AP_RSSI::read_udp_rssi()
   (confirmed against the vendor's JSON Integration Guide -- no UDP push
   or subscription mechanism is available). This backend issues periodic
   HTTP GETs of /localrfstatus.json on a dedicated worker thread and
-  extracts the three fields the existing Tools/rssi_bridge sidecar uses:
-  "sigLevA0", "sigLevB0" (dBm, per antenna) and "sigValid" (bool).
+  extracts per-node SNR and signal level arrays for the dynamically
+  discovered aircraft node-id (from /status.json):
+    - LocalDemodStatus.SNR[nodeId]     (dB)
+    - LocalDemodStatus.sigLevA[nodeId] (dBm, kept for diagnostics)
 
-  The strongest of the two channels is scaled by HTTP_DBM_LO/HI to the
-  0..1 range consumed by the rest of the autopilot (MAVLink, Logger,
-  ModeRSSIScan, OSD, ...).
+  SNR is scaled by the existing HTTP_DBM_LO/HI parameters (historic
+  naming; repurposed as SNR_LO/SNR_HI) into the 0..1 range consumed by
+  the rest of the autopilot (MAVLink, Logger, ModeRSSIScan, OSD, ...).
 
   HTTP Basic auth uses the Solo8 factory credentials baked into the
   sidecar: user="", pass="Eastwood". base64(":Eastwood") is
@@ -558,14 +578,20 @@ float AP_RSSI::read_udp_rssi()
 #define SOLO8_HTTP_PATH "/localrfstatus.json"
 #endif
 
+#ifndef SOLO8_HTTP_STATUS_PATH
+#define SOLO8_HTTP_STATUS_PATH "/status.json"
+#endif
+
 #ifndef SOLO8_HTTP_AUTH_B64
 #define SOLO8_HTTP_AUTH_B64 "OkVhc3R3b29k"   // base64(":Eastwood")
 #endif
 
-// The real localrfstatus.json body is ~1.8 KB (pretty-printed, 24-element
-// arrays of per-subcarrier SNR/sigLev). Add ~300 bytes of HTTP headers,
-// round up for growth across firmware revisions.
-#define SOLO8_HTTP_RESP_BUF 4096
+// /localrfstatus.json is small (~1.8KB), so keep a small persistent
+// buffer for the fast poll loop.
+#define SOLO8_HTTP_LOCAL_RESP_BUF 4096
+// /status.json can be tens of KB, so allocate a larger temporary buffer
+// only when node discovery is needed.
+#define SOLO8_HTTP_STATUS_RESP_BUF 32768
 // On embedded lwIP the first TCP connect can be dominated by ARP resolution,
 // which may exceed a few hundred milliseconds on some switches/radios.
 // Keep these timeouts conservative to avoid spurious "last=C" failures.
@@ -579,10 +605,16 @@ void AP_RSSI::http_init()
     }
     http_state.sock = nullptr;
     http_state.rssi_value = 0.0f;
-    http_state.last_dbm = 0.0f;
     http_state.last_sig_a_dbm = 0.0f;
     http_state.last_sig_b_dbm = 0.0f;
     http_state.last_sig_valid = false;
+    http_state.last_snr_db = -1.0f;
+    http_state.last_siglev_a_dbm = -120.0f;
+    http_state.local_node_id = -1;
+    http_state.aircraft_node_id = -1;
+    http_state.local_unit_name[0] = '\0';
+    http_state.aircraft_unit_name[0] = '\0';
+    http_state.last_status_discovery_ms = 0;
     http_state.last_reading_ms = 0;
     http_state.poll_success = 0;
     http_state.poll_count = 0;
@@ -592,8 +624,12 @@ void AP_RSSI::http_init()
     http_state.recv_errors = 0;
     http_state.parse_errors = 0;
     http_state.sig_invalid = 0;
+    http_state.status_poll_ok = 0;
+    http_state.status_poll_err = 0;
+    http_state.status_parse_err = 0;
     http_state.last_http_bytes = 0;
     http_state.last_stage = HTTPStage::OK;
+    http_state.last_status_stage = HTTPStage::OK;
 
     if (!hal.scheduler->thread_create(
             FUNCTOR_BIND_MEMBER(&AP_RSSI::http_thread, void),
@@ -608,18 +644,17 @@ void AP_RSSI::http_thread()
 {
     AP::network().startup_wait();
 
-    // response buffer re-used across polls; sized for a full
-    // /localrfstatus.json payload plus HTTP headers.
-    char *resp = (char*)calloc(SOLO8_HTTP_RESP_BUF, 1);
-    if (resp == nullptr) {
+    // persistent response buffer for /localrfstatus.json
+    char *local_resp = (char*)calloc(SOLO8_HTTP_LOCAL_RESP_BUF, 1);
+    if (local_resp == nullptr) {
         GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo RSSI_HTTP: alloc failed");
         return;
     }
 
-    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Colugo RSSI_HTTP: polling %s:%u%s",
+    // Keep this short; STATUSTEXT is heavily length-limited in many GCSes.
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "RSSI_HTTP poll %s:%u",
                   rssi_http_ip.get_str(),
-                  unsigned(rssi_http_port.get()),
-                  SOLO8_HTTP_PATH);
+                  unsigned(rssi_http_port.get()));
 
     // Heartbeat cadence for the diagnostic STATUSTEXT. Kept deliberately
     // coarse (10 s) so it never crowds the GCS message queue, but fast
@@ -634,9 +669,93 @@ void AP_RSSI::http_thread()
         const uint32_t period_ms = 1000 / hz;
         const uint32_t t0 = AP_HAL::millis();
 
+        // (Re)discover aircraft node-id only when unknown or link is lost.
+        // Cooldown keeps us from hammering /status.json when the radio is unreachable.
+        const uint32_t STATUS_DISCOVERY_COOLDOWN_MS = 1000;
+        bool need_discovery = false;
+        {
+            WITH_SEMAPHORE(http_state.sem);
+            need_discovery = (http_state.aircraft_node_id < 0);
+        }
+
+        // Also discover on loss (no valid SNR reading recently).
+        if (!need_discovery) {
+            const uint32_t now = AP_HAL::millis();
+            WITH_SEMAPHORE(http_state.sem);
+            if (http_state.last_reading_ms == 0 ||
+                (now - http_state.last_reading_ms) > uint32_t(uint16_t(rssi_http_loss_ms.get() < 200 ? 200 : rssi_http_loss_ms.get()))) {
+                need_discovery = true;
+            }
+        }
+
+        if (need_discovery) {
+            const uint32_t now = AP_HAL::millis();
+            bool do_poll = false;
+            {
+                WITH_SEMAPHORE(http_state.sem);
+                do_poll = (http_state.last_status_discovery_ms == 0) ||
+                          (now - http_state.last_status_discovery_ms >= STATUS_DISCOVERY_COOLDOWN_MS);
+                if (do_poll) {
+                    http_state.last_status_discovery_ms = now;
+                }
+            }
+
+            if (do_poll) {
+                // allocate large buffer only for status.json
+                char *status_resp = (char*)calloc(SOLO8_HTTP_STATUS_RESP_BUF, 1);
+                if (status_resp == nullptr) {
+                    http_state.status_poll_err++;
+                    // keep this quiet; the 10s heartbeat will show errors
+                } else {
+                    uint16_t status_len = 0;
+                    HTTPStage stage = HTTPStage::OK;
+                    const bool ok = http_poll_once(SOLO8_HTTP_STATUS_PATH, status_resp, SOLO8_HTTP_STATUS_RESP_BUF, status_len, stage);
+                    http_state.last_status_stage = stage;
+                    if (ok) {
+                        http_state.status_poll_ok++;
+                        const char *body = status_resp;
+                        uint16_t body_len = status_len;
+                        const char *split = strstr(status_resp, "\r\n\r\n");
+                        if (split != nullptr) {
+                            body = split + 4;
+                            body_len = uint16_t(status_len - (body - status_resp));
+                        }
+                        int8_t local_id = -1;
+                        int8_t aircraft_id = -1;
+                        char local_name[17] {};
+                        char aircraft_name[17] {};
+                        if (parse_status_json_for_aircraft_node_id(body, body_len,
+                                                                   local_id, aircraft_id,
+                                                                   local_name, sizeof(local_name),
+                                                                   aircraft_name, sizeof(aircraft_name))) {
+                            WITH_SEMAPHORE(http_state.sem);
+                            http_state.local_node_id = local_id;
+                            http_state.aircraft_node_id = aircraft_id;
+                            strncpy(http_state.local_unit_name, local_name, sizeof(http_state.local_unit_name));
+                            http_state.local_unit_name[sizeof(http_state.local_unit_name)-1] = '\0';
+                            strncpy(http_state.aircraft_unit_name, aircraft_name, sizeof(http_state.aircraft_unit_name));
+                            http_state.aircraft_unit_name[sizeof(http_state.aircraft_unit_name)-1] = '\0';
+
+                            // One-shot discovery print for Mission Planner.
+                            GCS_SEND_TEXT(MAV_SEVERITY_INFO,
+                                          "RSSI_HTTP mesh %d(%s)->%d(%s)",
+                                          int(http_state.local_node_id), http_state.local_unit_name,
+                                          int(http_state.aircraft_node_id), http_state.aircraft_unit_name);
+                        } else {
+                            http_state.status_parse_err++;
+                        }
+                    } else {
+                        http_state.status_poll_err++;
+                    }
+                    free(status_resp);
+                }
+            }
+        }
+
+        // Poll localrfstatus for fast SNR updates.
         uint16_t resp_len = 0;
         HTTPStage stage = HTTPStage::OK;
-        const bool ok = http_poll_once(resp, SOLO8_HTTP_RESP_BUF, resp_len, stage);
+        const bool ok = http_poll_once(SOLO8_HTTP_PATH, local_resp, SOLO8_HTTP_LOCAL_RESP_BUF, resp_len, stage);
         http_state.last_stage = stage;
         if (!ok) {
             http_state.poll_errors++;
@@ -651,43 +770,55 @@ void AP_RSSI::http_thread()
             http_state.poll_success++;
             http_state.last_http_bytes = resp_len;
 
-            // locate the start of the body (after "\r\n\r\n"); if not
-            // found, treat the whole buffer as body.
-            const char *body = resp;
+            const char *body = local_resp;
             uint16_t body_len = resp_len;
-            const char *split = strstr(resp, "\r\n\r\n");
+            const char *split = strstr(local_resp, "\r\n\r\n");
             if (split != nullptr) {
                 body = split + 4;
-                body_len = uint16_t(resp_len - (body - resp));
+                body_len = uint16_t(resp_len - (body - local_resp));
             }
 
-            float dbm = 0.0f;
-            bool  valid = false;
-            float sig_a_dbm = 0.0f;
-            float sig_b_dbm = 0.0f;
-            const bool parsed = parse_solo8_json(body, body_len, dbm, valid, sig_a_dbm, sig_b_dbm);
+            int8_t aircraft_id = -1;
+            {
+                WITH_SEMAPHORE(http_state.sem);
+                aircraft_id = http_state.aircraft_node_id;
+            }
+
+            float snr_db = -1.0f;
+            float siglev_a_dbm = -120.0f;
+            float noise_a0_dbm = 0.0f;
+            float noise_b0_dbm = 0.0f;
+            bool sig_valid = false;
+            const bool parsed = (aircraft_id >= 0) &&
+                                parse_localrfstatus_json_for_node_metrics(body, body_len, aircraft_id,
+                                                                          snr_db, siglev_a_dbm,
+                                                                          noise_a0_dbm, noise_b0_dbm,
+                                                                          sig_valid);
             if (!parsed) {
                 http_state.parse_errors++;
-            } else if (!valid) {
-                // body is well-formed but Solo8 says the current reading
-                // is not usable (no demod lock); keep dBm for visibility
-                // but do not update last_reading_ms so rxrssi stays 0.
+            } else if (!sig_valid || !(snr_db > 3.1f)) {
+                // Body is well-formed but no usable SNR for the tracked node.
+                // Keep values for diagnostics but don't refresh last_reading_ms so rxrssi ages to 0.
                 http_state.sig_invalid++;
                 WITH_SEMAPHORE(http_state.sem);
-                http_state.last_dbm = dbm;
-                http_state.last_sig_a_dbm = sig_a_dbm;
-                http_state.last_sig_b_dbm = sig_b_dbm;
-                http_state.last_sig_valid = valid;
+                http_state.last_sig_valid = sig_valid;
+                http_state.last_snr_db = snr_db;
+                http_state.last_siglev_a_dbm = siglev_a_dbm;
+                http_state.last_sig_a_dbm = noise_a0_dbm;
+                http_state.last_sig_b_dbm = noise_b0_dbm;
             } else {
-                const float lo = rssi_http_dbm_low.get();
-                const float hi = rssi_http_dbm_high.get();
-                const float scaled = scale_and_constrain_float_rssi(dbm, lo, hi);
+                // Repurpose HTTP_DBM_LO/HI as SNR_LO/SNR_HI for scaling.
+                // snr_db is in dB (>= 0) with -3 sentinel meaning no node.
+                const float snr_lo = rssi_http_dbm_low.get();
+                const float snr_hi = rssi_http_dbm_high.get();
+                const float scaled = (snr_db < 0) ? 0.0f : scale_and_constrain_float_rssi(snr_db, snr_lo, snr_hi);
 
                 WITH_SEMAPHORE(http_state.sem);
-                http_state.last_dbm = dbm;
-                http_state.last_sig_a_dbm = sig_a_dbm;
-                http_state.last_sig_b_dbm = sig_b_dbm;
-                http_state.last_sig_valid = valid;
+                http_state.last_sig_valid = sig_valid;
+                http_state.last_snr_db = snr_db;
+                http_state.last_siglev_a_dbm = siglev_a_dbm;
+                http_state.last_sig_a_dbm = noise_a0_dbm;
+                http_state.last_sig_b_dbm = noise_b0_dbm;
                 http_state.rssi_value = scaled;
                 http_state.last_reading_ms = AP_HAL::millis();
                 http_state.poll_count++;
@@ -706,18 +837,34 @@ void AP_RSSI::http_thread()
         const uint32_t now = AP_HAL::millis();
         if (now - last_heartbeat_ms >= HEARTBEAT_MS) {
             last_heartbeat_ms = now;
-            float snap_dbm = 0.0f;
             float snap_rssi = 0.0f;
             float snap_sig_a_dbm = 0.0f;
             float snap_sig_b_dbm = 0.0f;
             bool  snap_sig_valid = false;
+            float snap_snr_db = -1.0f;
+            int8_t snap_local_id = -1;
+            int8_t snap_aircraft_id = -1;
+            char snap_local_name[17] {};
+            char snap_aircraft_name[17] {};
+            uint32_t snap_st_ok = 0;
+            uint32_t snap_st_err = 0;
+            uint32_t snap_st_prs = 0;
             {
                 WITH_SEMAPHORE(http_state.sem);
-                snap_dbm  = http_state.last_dbm;
                 snap_rssi = http_state.rssi_value;
                 snap_sig_a_dbm = http_state.last_sig_a_dbm;
                 snap_sig_b_dbm = http_state.last_sig_b_dbm;
                 snap_sig_valid = http_state.last_sig_valid;
+                snap_snr_db = http_state.last_snr_db;
+                snap_local_id = http_state.local_node_id;
+                snap_aircraft_id = http_state.aircraft_node_id;
+                strncpy(snap_local_name, http_state.local_unit_name, sizeof(snap_local_name));
+                snap_local_name[sizeof(snap_local_name)-1] = '\0';
+                strncpy(snap_aircraft_name, http_state.aircraft_unit_name, sizeof(snap_aircraft_name));
+                snap_aircraft_name[sizeof(snap_aircraft_name)-1] = '\0';
+                snap_st_ok = http_state.status_poll_ok;
+                snap_st_err = http_state.status_poll_err;
+                snap_st_prs = http_state.status_parse_err;
             }
             // Single compact line per 10s. Staged error counters let us
             // see *which* step is failing when B=0 (C=connect S=send
@@ -743,11 +890,25 @@ void AP_RSSI::http_thread()
             // Second line: raw Solo8 fields (low rate) for calibration/debug.
             // Keep it short to avoid STATUSTEXT truncation.
             GCS_SEND_TEXT(MAV_SEVERITY_INFO,
-                          "RSSI_HTTP RX valid:%u sigA:%.1f sigB:%.1f",
+                          "RSSI_HTTP RX n:%d->%d snr:%.1f v:%u A0:%.1f B0:%.1f",
+                          int(snap_local_id),
+                          int(snap_aircraft_id),
+                          double(snap_snr_db),
                           snap_sig_valid ? 1U : 0U,
                           double(snap_sig_a_dbm),
                           double(snap_sig_b_dbm));
-            (void)snap_dbm;
+            if (snap_local_id >= 0 && snap_aircraft_id >= 0) {
+                GCS_SEND_TEXT(MAV_SEVERITY_INFO,
+                              "RSSI_HTTP mesh %d(%s)->%d(%s)",
+                              int(snap_local_id), snap_local_name,
+                              int(snap_aircraft_id), snap_aircraft_name);
+            } else {
+                GCS_SEND_TEXT(MAV_SEVERITY_INFO,
+                              "RSSI_HTTP mesh undiscovered st:%lu/%lu prs:%lu",
+                              (unsigned long)snap_st_ok,
+                              (unsigned long)snap_st_err,
+                              (unsigned long)snap_st_prs);
+            }
         }
 
         const uint32_t elapsed = AP_HAL::millis() - t0;
@@ -755,14 +916,18 @@ void AP_RSSI::http_thread()
             hal.scheduler->delay(period_ms - elapsed);
         }
     }
+
+    // not reached, but keep for symmetry if this ever changes
+    free(local_resp);
 }
 
 /*
   Run one HTTP GET against the Solo8. Returns true on successful
-  receipt of *some* response body; parse errors are reported separately
-  by parse_solo8_json.
+  receipt of *some* response body; JSON/schema parse errors are tracked
+  separately by the caller.
 */
-bool AP_RSSI::http_poll_once(char *resp_buf, uint16_t resp_buf_len,
+bool AP_RSSI::http_poll_once(const char *path,
+                             char *resp_buf, uint16_t resp_buf_len,
                              uint16_t &resp_len, HTTPStage &stage)
 {
     resp_len = 0;
@@ -785,6 +950,10 @@ bool AP_RSSI::http_poll_once(char *resp_buf, uint16_t resp_buf_len,
     sock->set_blocking(false);
     stage = HTTPStage::SEND;
 
+    // default to the legacy endpoint if no path provided
+    if (path == nullptr || path[0] == '\0') {
+        path = SOLO8_HTTP_PATH;
+    }
     char req[256];
     const int req_len = hal.util->snprintf(
         req, sizeof(req),
@@ -794,7 +963,7 @@ bool AP_RSSI::http_poll_once(char *resp_buf, uint16_t resp_buf_len,
         "User-Agent: ArduPilot\r\n"
         "Accept: application/json\r\n"
         "Connection: close\r\n\r\n",
-        SOLO8_HTTP_PATH, dest, SOLO8_HTTP_AUTH_B64);
+        path, dest, SOLO8_HTTP_AUTH_B64);
     if (req_len <= 0) {
         delete sock;
         return false;
@@ -853,44 +1022,236 @@ bool AP_RSSI::http_poll_once(char *resp_buf, uint16_t resp_buf_len,
 }
 
 /*
-  Extract sigLevA0, sigLevB0, sigValid from the Solo8 JSON body.
-
-  Anchored on the "LocalDemodStatus" key so we ignore the identically
-  named sibling under InterferenceAltStatus (where sigLevA0/B0 are per-
-  frequency arrays, not scalars) and any future nested objects the
-  vendor may add. This is a lightweight needle-match lexer -- NOT a
-  general JSON parser -- which is sufficient because the Solo8 schema
-  below "LocalDemodStatus" is stable per the vendor's JSON Integration
-  Guide.
-
-  Example excerpt of localrfstatus.json the parser operates on:
-
-      "LocalDemodStatus" : {
-        "nChan"    : 2,
-        "sigValid" : true,
-        ...
-        "sigLevA0" : -102,
-        "sigLevB0" : -96
-      },
-      "InterferenceAltStatus" : {
-        ...
-        "sigLevA0" : [ -120, -120, -101, ... ],   <-- must NOT read this
-        "sigLevB0" : [ -120, -120,  -96, ... ]
-      }
+  Parse status.json and discover the aircraft node-id (array index).
 */
-bool AP_RSSI::parse_solo8_json(const char *body, uint16_t len,
-                               float &out_dbm, bool &out_valid,
-                               float &out_sig_a_dbm, float &out_sig_b_dbm) const
+bool AP_RSSI::parse_status_json_for_aircraft_node_id(const char *body, uint16_t len,
+                                                     int8_t &out_local_node_id,
+                                                     int8_t &out_aircraft_node_id,
+                                                     char *out_local_unit_name, uint8_t out_local_unit_name_len,
+                                                     char *out_aircraft_unit_name, uint8_t out_aircraft_unit_name_len) const
 {
     if (body == nullptr || len < 32) {
         return false;
     }
+    if (out_local_unit_name != nullptr && out_local_unit_name_len > 0) {
+        out_local_unit_name[0] = '\0';
+    }
+    if (out_aircraft_unit_name != nullptr && out_aircraft_unit_name_len > 0) {
+        out_aircraft_unit_name[0] = '\0';
+    }
 
-    // narrow the search window to the LocalDemodStatus object
+    // Narrow scope to Mesh1 to avoid other NodeId strings elsewhere.
+    const char *mesh = strstr(body, "\"Mesh1\"");
+    if (mesh == nullptr) {
+        return false;
+    }
+
+    auto find_int_after = [&](const char *scope, const char *key, int &out) -> bool {
+        const char *p = strstr(scope, key);
+        if (p == nullptr) {
+            return false;
+        }
+        p = strchr(p + strlen(key), ':');
+        if (p == nullptr) {
+            return false;
+        }
+        ++p;
+        while (*p == ' ' || *p == '\t') {
+            ++p;
+        }
+        char *end = nullptr;
+        const long v = strtol(p, &end, 10);
+        if (end == p) {
+            return false;
+        }
+        out = int(v);
+        return true;
+    };
+
+    auto find_string_after = [&](const char *scope, const char *key, char *out, uint8_t out_len) -> bool {
+        if (out == nullptr || out_len == 0) {
+            return false;
+        }
+        const char *p = strstr(scope, key);
+        if (p == nullptr) {
+            return false;
+        }
+        p = strchr(p + strlen(key), ':');
+        if (p == nullptr) {
+            return false;
+        }
+        ++p;
+        while (*p == ' ' || *p == '\t') {
+            ++p;
+        }
+        if (*p != '\"') {
+            return false;
+        }
+        ++p;
+        uint8_t n = 0;
+        while (*p != '\0' && *p != '\"' && n + 1 < out_len) {
+            out[n++] = *p++;
+        }
+        out[n] = '\0';
+        return (n > 0);
+    };
+    int local_id = -1;
+    if (!find_int_after(mesh, "\"NodeId\"", local_id)) {
+        return false;
+    }
+    out_local_node_id = int8_t(local_id);
+
+    // Find RemoteStatus array.
+    const char *rs = strstr(mesh, "\"RemoteStatus\"");
+    if (rs == nullptr) {
+        return false;
+    }
+    const char *arr = strchr(rs, '[');
+    if (arr == nullptr) {
+        return false;
+    }
+    ++arr;
+
+    // Walk objects in the array and keep an index counter.
+    int idx = 0;
+    const char *p = arr;
+    while (*p != '\0') {
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' || *p == ',') {
+            ++p;
+        }
+        if (*p == ']') {
+            break;
+        }
+        if (*p != '{') {
+            // unexpected token; bail
+            return false;
+        }
+        const char *obj_start = p;
+        int depth = 0;
+        while (*p != '\0') {
+            if (*p == '{') {
+                depth++;
+            } else if (*p == '}') {
+                depth--;
+                if (depth == 0) {
+                    ++p;
+                    break;
+                }
+            }
+            ++p;
+        }
+        if (depth != 0) {
+            return false;
+        }
+        const char *obj_end = p;
+
+        // Evaluate the discovery predicate on this object slice.
+        bool timeout_true = false;
+        const char *tmo = strstr(obj_start, "\"timeout\"");
+        if (tmo != nullptr && tmo < obj_end) {
+            const char *c = strchr(tmo, ':');
+            if (c != nullptr && c < obj_end) {
+                ++c;
+                while (*c == ' ' || *c == '\t') {
+                    ++c;
+                }
+                timeout_true = (strncmp(c, "true", 4) == 0);
+            }
+        }
+
+        const char *us = strstr(obj_start, "\"UnitStatus\"");
+        if (us != nullptr && us < obj_end) {
+            int node_id = -1;
+            if (find_int_after(us, "\"nodeId\"", node_id)) {
+                // Cache local name even if this entry isn't timed-out.
+                if (node_id == local_id && out_local_unit_name != nullptr && out_local_unit_name[0] == '\0') {
+                    (void)find_string_after(us, "\"unitName\"", out_local_unit_name, out_local_unit_name_len);
+                }
+                // Aircraft discovery predicate requires timeout=true
+                if (timeout_true && node_id != local_id) {
+                    (void)find_string_after(us, "\"unitName\"", out_aircraft_unit_name, out_aircraft_unit_name_len);
+                    out_aircraft_node_id = int8_t(idx);
+                    return true;
+                }
+            }
+        }
+
+        idx++;
+        // safety bound (Mesh1.MaxNodes is typically 16)
+        if (idx > 64) {
+            break;
+        }
+    }
+
+    return false;
+}
+
+/*
+  Parse localrfstatus.json and extract per-node SNR and sigLevA for a given node-id.
+
+  Inactive node slots use sentinel values: SNR=-3.0, sigLevA=-120.
+*/
+bool AP_RSSI::parse_localrfstatus_json_for_node_metrics(const char *body, uint16_t len,
+                                                        int8_t aircraft_node_id,
+                                                        float &out_snr_db,
+                                                        float &out_siglev_a_dbm,
+                                                        float &out_noise_a0_dbm,
+                                                        float &out_noise_b0_dbm,
+                                                        bool &out_sig_valid) const
+{
+    if (body == nullptr || len < 32 || aircraft_node_id < 0) {
+        return false;
+    }
+
     const char *scope = strstr(body, "\"LocalDemodStatus\"");
     if (scope == nullptr) {
         return false;
     }
+
+    // Parse sigValid (present in both example payloads).
+    out_sig_valid = false;
+    const char *pv = strstr(scope, "\"sigValid\"");
+    if (pv != nullptr) {
+        pv = strchr(pv + sizeof("\"sigValid\"") - 1, ':');
+        if (pv != nullptr) {
+            ++pv;
+            while (*pv == ' ' || *pv == '\t') {
+                ++pv;
+            }
+            out_sig_valid = (strncmp(pv, "true", 4) == 0);
+        }
+    }
+
+    auto find_array_element = [&](const char *key, int index, float &out) -> bool {
+        const char *p = strstr(scope, key);
+        if (p == nullptr) {
+            return false;
+        }
+        p = strchr(p + strlen(key), '[');
+        if (p == nullptr) {
+            return false;
+        }
+        ++p;
+        for (int i = 0; i <= index; i++) {
+            while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' || *p == ',') {
+                ++p;
+            }
+            if (*p == ']') {
+                return false;
+            }
+            char *end = nullptr;
+            const float v = strtof(p, &end);
+            if (end == p) {
+                return false;
+            }
+            if (i == index) {
+                out = v;
+                return true;
+            }
+            p = end;
+        }
+        return false;
+    };
 
     auto find_scalar_number = [&](const char *key, float &out) -> bool {
         const char *p = strstr(scope, key);
@@ -905,8 +1266,7 @@ bool AP_RSSI::parse_solo8_json(const char *body, uint16_t len,
         while (*p == ' ' || *p == '\t') {
             ++p;
         }
-        // reject arrays -- the Solo8 uses the same field names inside
-        // InterferenceAltStatus but as "[ -120, ..., -120 ]" arrays.
+        // Reject arrays (e.g. InterferenceAltStatus also contains sigLevA0/B0 as arrays).
         if (*p == '[') {
             return false;
         }
@@ -919,32 +1279,20 @@ bool AP_RSSI::parse_solo8_json(const char *body, uint16_t len,
         return true;
     };
 
-    float a = 0.0f;
-    float b = 0.0f;
-    if (!find_scalar_number("\"sigLevA0\"", a)) {
+    float snr = -1.0f;
+    float sig_a = -120.0f;
+    if (!find_array_element("\"SNR\"", aircraft_node_id, snr)) {
         return false;
     }
-    if (!find_scalar_number("\"sigLevB0\"", b)) {
+    if (!find_array_element("\"sigLevA\"", aircraft_node_id, sig_a)) {
         return false;
     }
-    out_sig_a_dbm = a;
-    out_sig_b_dbm = b;
 
-    // sigValid is a boolean literal inside LocalDemodStatus.
-    out_valid = false;
-    const char *pv = strstr(scope, "\"sigValid\"");
-    if (pv != nullptr) {
-        pv = strchr(pv + sizeof("\"sigValid\"") - 1, ':');
-        if (pv != nullptr) {
-            ++pv;
-            while (*pv == ' ' || *pv == '\t') {
-                ++pv;
-            }
-            out_valid = (strncmp(pv, "true", 4) == 0);
-        }
-    }
-
-    out_dbm = (a > b) ? a : b;
+    out_snr_db = snr;
+    out_siglev_a_dbm = sig_a;
+    // keep the noise-floor scalars only for diagnostics (not used for link assessment)
+    (void)find_scalar_number("\"sigLevA0\"", out_noise_a0_dbm);
+    (void)find_scalar_number("\"sigLevB0\"", out_noise_b0_dbm);
     return true;
 }
 
