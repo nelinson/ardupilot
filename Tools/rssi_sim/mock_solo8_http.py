@@ -7,8 +7,10 @@ Runs on a PC (e.g. Windows). It:
     the tracker pointing (bearing, pitch).
   - Simulates a moving aircraft "truth" direction (azimuth/elevation)
     using a simple kinematic model.
-  - Serves /localrfstatus.json with LocalDemodStatus.sigLevA0/B0/sigValid,
-    so ArduPilot AP_RSSI HTTP backend (RSSI_TYPE=7) can poll it.
+  - Serves /localrfstatus.json and /status.json with the subset of fields
+    used by ArduPilot's AP_RSSI HTTP backend (RSSI_TYPE=7):
+      - /status.json: Status.Mesh1.NodeId and Status.Mesh1.RemoteStatus[]
+      - /localrfstatus.json: LocalRfStatus.LocalDemodStatus.SNR[] and sigLevA[]
 
 This is intended for closed-loop testing of ModeRSSIScan without real
 radios or servos.
@@ -43,6 +45,12 @@ class State:
         self.sig_valid = True
         self.sig_a_dbm = -120.0
         self.sig_b_dbm = -120.0
+        self.snr_db = -3.0
+
+        # mesh IDs for node discovery (Status.Mesh1.RemoteStatus scan)
+        self.local_node_id = 2
+        self.aircraft_node_id = 6
+        self.aircraft_unit_name = "ADT-prince"
 
 
 def aircraft_truth(t: float, az_speed_dps: float, el_amplitude_deg: float, el_period_s: float) -> tuple[float, float]:
@@ -125,6 +133,12 @@ def updater_thread(
             st.sig_valid = sig_valid
             st.sig_a_dbm = dbm_a
             st.sig_b_dbm = dbm_b
+            # crude SNR model: map signal above floor into an SNR-ish range.
+            # Keep -3.0 as the sentinel for "no link".
+            if sig_valid:
+                st.snr_db = max(-3.0, min(40.0, (dbm_a - floor_dbm) * 0.5))
+            else:
+                st.snr_db = -3.0
 
         time.sleep(period)
 
@@ -133,20 +147,58 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "mock-solo8-http/1.0"
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path != "/localrfstatus.json":
+        if self.path not in ("/localrfstatus.json", "/status.json"):
             self.send_response(404)
             self.end_headers()
             return
 
         st: State = self.server.state  # type: ignore[attr-defined]
         with st.lock:
-            body = {
-                "LocalDemodStatus": {
-                    "sigValid": bool(st.sig_valid),
-                    "sigLevA0": float(round(st.sig_a_dbm, 2)),
-                    "sigLevB0": float(round(st.sig_b_dbm, 2)),
+            if self.path == "/status.json":
+                max_nodes = 16
+                remote = [{"timeout": False, "timeoutI": 0} for _ in range(max_nodes)]
+
+                # local entry (mirrors vendor behavior where it can be present with timeout=true)
+                local_idx = int(st.local_node_id)
+                if 0 <= local_idx < max_nodes:
+                    remote[local_idx] = {
+                        "timeout": True,
+                        "timeoutI": 15,
+                        "UnitStatus": {"nodeId": int(st.local_node_id), "unitName": "GDT"},
+                    }
+
+                # aircraft entry - crafted to satisfy the discovery predicate
+                ac_idx = int(st.aircraft_node_id)
+                if 0 <= ac_idx < max_nodes:
+                    remote[ac_idx] = {
+                        "timeout": True,
+                        "timeoutI": 15,
+                        "UnitStatus": {"nodeId": int(st.aircraft_node_id), "unitName": st.aircraft_unit_name},
+                    }
+
+                body = {"Status": {"Mesh1": {"NodeId": int(st.local_node_id), "RemoteStatus": remote}}}
+            else:
+                max_nodes = 16
+                snr = [-3.0 for _ in range(max_nodes)]
+                sig_a = [-120 for _ in range(max_nodes)]
+
+                ac_idx = int(st.aircraft_node_id)
+                if st.sig_valid and 0 <= ac_idx < max_nodes:
+                    snr[ac_idx] = float(round(st.snr_db, 1))
+                    sig_a[ac_idx] = int(round(st.sig_a_dbm))
+
+                body = {
+                    "LocalRfStatus": {
+                        "LocalDemodStatus": {
+                            "sigValid": bool(st.sig_valid),
+                            "SNR": snr,
+                            "sigLevA": sig_a,
+                            # keep noise-floor scalars for debug compatibility
+                            "sigLevA0": float(round(st.sig_a_dbm - 60.0, 1)),
+                            "sigLevB0": float(round(st.sig_b_dbm - 60.0, 1)),
+                        }
+                    }
                 }
-            }
 
         payload = json.dumps(body).encode("utf-8")
         self.send_response(200)
