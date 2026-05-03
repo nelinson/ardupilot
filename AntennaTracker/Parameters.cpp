@@ -490,7 +490,7 @@ const AP_Param::Info Tracker::var_info[] = {
 
     // @Param: INITIAL_MODE
     // @DisplayName: Mode tracker will switch into after initialization
-    // @Description: 0:MANUAL, 1:STOP, 2:SCAN, 10:AUTO
+    // @Description: 0:MANUAL, 1:STOP, 2:SCAN, 4:GUIDED, 6:RSSI_SCAN, 7:RSSI_SC, 10:AUTO, 16:INITIALISING
     // @User: Standard
     GSCALAR(initial_mode,            "INITIAL_MODE",     10),
 
@@ -539,7 +539,7 @@ const AP_Param::Info Tracker::var_info[] = {
 
     // @Param: RSSI_PAN_STEP
     // @DisplayName: RSSI Scan Pan Step
-    // @Description: Pan axis step size in degrees during RSSI scan
+    // @Description: Pan axis step size in degrees during RSSI_SCAN mode 6 pan sweep (0 to 360 deg, same convention as AHRS yaw for plotting)
     // @Range: 1 30
     // @Units: deg
     // @User: Standard
@@ -591,6 +591,46 @@ const AP_Param::Info Tracker::var_info[] = {
     // @Units: %
     // @User: Standard
     GSCALAR(rssi_rescan_drop,    "RSSI_RESCAN_DROP", 20),
+
+    // @Param: RSSI_SCY_PWM
+    // @DisplayName: Compass RSSI scan yaw PWM
+    // @Description: Constant PWM sent to yaw servo while scanning horizontally (e.g. 1600). Use RC yaw reverse if direction is wrong. When mode RSSI_SC (7) finishes the pitch PID phase (hold OK or point timeout), the tracker switches to RSSI_SCAN (6) at the compass scan's best pan/tilt (dither and rescan-on-drop), not a fresh pan sweep.
+    // @Range: 800 2200
+    // @Units: PWM
+    // @User: Standard
+    GSCALAR(rssi_scy_pwm,        "RSSI_SCY_PWM",   1600),
+
+    // @Param: RSSI_SCY_ARC
+    // @DisplayName: Compass RSSI scan yaw arc
+    // @Description: Degrees of clockwise compass rotation accumulated from mode entry to complete yaw RSSI scan (1-360). Example: 180 for half-turn bench test. Progress uses integrated heading motion (not start-to-current chord), so EKF spikes do not finish the arc early. Sample grid uses RSSI_PAN_STEP (degrees).
+    // @Range: 1 360
+    // @Units: deg
+    // @User: Standard
+    GSCALAR(rssi_scy_arc,        "RSSI_SCY_ARC",   360),
+
+    // @Param: RSSI_SCP_PWM
+    // @DisplayName: Compass RSSI scan pitch PWM
+    // @Description: Constant PWM sent to pitch servo while scanning vertically during compass-gated RSSI scan.
+    // @Range: 800 2200
+    // @Units: PWM
+    // @User: Standard
+    GSCALAR(rssi_scp_pwm,        "RSSI_SCP_PWM",   1600),
+
+    // @Param: RSSI_SCP_ARC
+    // @DisplayName: Compass RSSI scan pitch arc
+    // @Description: Degrees of pitch increase from entry pitch for vertical RSSI scan. Progress uses integrated upward pitch motion. Respect PITCH_MIN/PITCH_MAX. Sample grid uses RSSI_TILT_STEP (degrees). Use servo reverse or PWM direction so RSSI_SCP_PWM drives pitch more positive over the scan.
+    // @Range: 1 180
+    // @Units: deg
+    // @User: Standard
+    GSCALAR(rssi_scp_arc,        "RSSI_SCP_ARC",   60),
+
+    // @Param: RSSI_SC_TO
+    // @DisplayName: Compass RSSI scan timeout
+    // @Description: Milliseconds without compass progress toward next grid sample before aborting current drive phase.
+    // @Range: 1000 120000
+    // @Units: ms
+    // @User: Standard
+    GSCALAR(rssi_sc_to,          "RSSI_SC_TO",     30000),
     /*NatiE end*/
 
     AP_VAREND

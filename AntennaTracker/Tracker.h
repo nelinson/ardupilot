@@ -64,6 +64,7 @@ public:
     friend class ModeGuided;
     friend class Mode;
     friend class ModeRSSIScan; /*NatiE*/
+    friend class ModeRSSIScanCompass;
 
     void arm_servos();
     void disarm_servos();
@@ -106,6 +107,7 @@ private:
     ModeServoTest mode_servotest;
     ModeStop mode_stop;
     ModeRSSIScan mode_rssi_scan; /*NatiE*/
+    ModeRSSIScanCompass mode_rssi_scan_compass;
 
     // Vehicle state
     struct {

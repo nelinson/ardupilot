@@ -9,7 +9,7 @@
  * AntennaTracker - RSSI Scan Mode
  *
  * Algorithm:
- *   1. Sweep pan -180→+180 at fixed mid-tilt, record RSSI at each step
+ *   1. Sweep pan 0→360° at fixed mid-tilt (same convention as AHRS yaw), record RSSI at each step
  *   2. Move to best pan angle
  *   3. Sweep tilt min→max at best pan, record RSSI at each step
  *   4. Move to best pan+tilt → LOCKED
@@ -21,6 +21,63 @@
 
 #include "mode.h"
 #include "Tracker.h"
+
+#include <string.h>
+
+void ModeRSSIScan::reset_for_entry()
+{
+    _initialized = false;
+    _handoff_lock_from_sc = false;
+}
+
+bool ModeRSSIScan::consume_handoff_nav(float &bearing_deg, float &pitch_deg)
+{
+    if (!_handoff_lock_from_sc) {
+        return false;
+    }
+    bearing_deg = _pan_best;
+    pitch_deg = _tilt_best;
+    _handoff_lock_from_sc = false;
+    return true;
+}
+
+void ModeRSSIScan::import_lock_from_compass_scan(const ModeRSSIScanCompass &sc)
+{
+    const float pan = wrap_360(sc.compass_handoff_pan_deg());
+    const float tilt = constrain_float(sc.compass_handoff_tilt_deg(),
+                                        tracker.g.pitch_min,
+                                        tracker.g.pitch_max);
+
+    float rssi_lock = sc.compass_handoff_rssi_norm();
+    if (rssi_lock < 0.0f) {
+        rssi_lock = read_rssi_avg();
+    }
+    rssi_lock = constrain_float(rssi_lock, 0.0f, 1.0f);
+
+    if (rssi_lock < tracker.g.rssi_lock_threshold * 0.01f) {
+        gcs().send_text(MAV_SEVERITY_WARNING,
+                         "RSSI_SCAN: weak RSSI from RSSI_SC; full scan");
+        reset_for_entry();
+        return;
+    }
+
+    _pan_best = pan;
+    _tilt_best = tilt;
+    _pan_current = pan;
+    _tilt_current = tilt;
+    _rssi_best = rssi_lock;
+    _rssi_at_lock = rssi_lock;
+    _initialized = true;
+    _handoff_lock_from_sc = true;
+    _dither_step = 0;
+    memset(_dither_rssi, 0, sizeof(_dither_rssi));
+
+    gcs().send_text(MAV_SEVERITY_INFO,
+                     "RSSI_SCAN: locked from RSSI_SC pan=%.1f tilt=%.1f rssi=%.0f%%",
+                     (double)pan, (double)tilt, (double)(rssi_lock * 100.0f));
+
+    start_dither();
+}
 
 // ---------------------------------------------------------------
 // Init
@@ -63,15 +120,16 @@ void ModeRSSIScan::update()
 // ---------------------------------------------------------------
 void ModeRSSIScan::start_pan_scan()
 {
+    _handoff_lock_from_sc = false;
     _pan_best   = 0.0f;
     _tilt_best  = 0.0f;
     _rssi_best  = 0.0f;
 
     // Start at configured midpoint of mechanical tilt range.
     _tilt_current = (tracker.g.pitch_min + tracker.g.pitch_max) * 0.5f;
-    _pan_current  = -180.0f;
+    _pan_current  = 0.0f;
 
-    gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SCAN: Pan sweep starting");
+    gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SCAN: Pan sweep 0-360 deg starting");
     move_and_wait(_pan_current, _tilt_current, ScanState::SCAN_PAN);
 }
 
@@ -86,8 +144,8 @@ void ModeRSSIScan::update_scan_pan()
 
     _pan_current += tracker.g.rssi_scan_pan_step;
 
-    if (_pan_current > 180.0f) {
-        // Pan sweep done
+    if (_pan_current > 360.0f) {
+        // Pan sweep done (full circle in 0..360° convention)
         gcs().send_text(MAV_SEVERITY_INFO,
             "RSSI_SCAN: Pan done. Best %.1f deg  RSSI %.0f%%",
             (double)_pan_best, (double)(_rssi_best * 100.0f));
@@ -214,8 +272,7 @@ void ModeRSSIScan::update_dither()
             case 2: _tilt_best -= dither; break;
             case 3: _tilt_best += dither; break;
             }
-            // Clamp
-            _pan_best  = constrain_float(_pan_best,  -180.0f, 180.0f);
+            _pan_best = wrap_360(_pan_best);
             _tilt_best = constrain_float(_tilt_best,
                           tracker.g.pitch_min,
                           tracker.g.pitch_max);
@@ -266,7 +323,8 @@ void ModeRSSIScan::move_and_wait(float pan_deg, float tilt_deg, ScanState next_s
 // Convert degrees to servo commands and apply
 void ModeRSSIScan::set_servos(float pan_deg, float tilt_deg)
 {
-    tracker.nav_status.bearing       = pan_deg;
-    tracker.nav_status.pitch         = tilt_deg;
+    // Match AHRS yaw (0..360°) and NAV_CONTROLLER_OUTPUT for consistent plotting
+    tracker.nav_status.bearing = wrap_360(pan_deg);
+    tracker.nav_status.pitch   = tilt_deg;
     update_auto();
 }

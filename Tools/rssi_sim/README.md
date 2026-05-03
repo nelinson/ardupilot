@@ -50,7 +50,7 @@ param set RSSI_HTTP_RATE 10
 param set RSSI_HTTP_LOSS 1500
 ```
 
-Then switch to your RSSI mode (mode number depends on your build; in your fork it is `RSSI_SCAN=6` in `AntennaTracker/mode.h`).
+Then switch to your RSSI mode (mode number depends on your build; upstream-style mapping includes `RSSI_SCAN=6` and compass-gated `RSSI_SC=7` in `AntennaTracker/mode.h`). For bench scans with fixed PWM and AHRS grid sampling, use mode **7** (`INITIAL_MODE=7` after reboot, or select `RSSI_SC` in the GCS if exposed).
 
 ## Notes
 

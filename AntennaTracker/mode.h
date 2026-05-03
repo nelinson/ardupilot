@@ -12,6 +12,7 @@ public:
         SERVOTEST=3,
         GUIDED=4,
         RSSI_SCAN=6,    /*NatiE*/
+        RSSI_SCAN_C=7,  /* compass-gated RSSI scan */
         AUTO=10,
         INITIALISING=16
         // Mode number 30 reserved for "offboard" for external/lua control.
@@ -132,6 +133,8 @@ public:
     void update() override {};
 };
 
+class ModeRSSIScanCompass;
+
 /*NatiE*/
 class ModeRSSIScan : public Mode {
 public:
@@ -139,9 +142,13 @@ public:
     const char *name() const override { return "RSSI_SCAN"; }
     bool requires_armed_servos() const override { return true; }
     void update() override;
+    void reset_for_entry();
+    void import_lock_from_compass_scan(const ModeRSSIScanCompass &sc);
+    bool consume_handoff_nav(float &bearing_deg, float &pitch_deg);
 
 private:
     bool _initialized {false};
+    bool _handoff_lock_from_sc {false};
     enum class ScanState : uint8_t {
         SCAN_PAN,        // sweeping pan at fixed tilt
         SCAN_TILT,       // sweeping tilt at locked pan
@@ -180,4 +187,72 @@ private:
     void    update_dither();
     void    update_wait_settle();
     bool    init_rssi_scan();
+};
+
+class ModeRSSIScanCompass : public Mode {
+public:
+    Mode::Number number() const override { return Mode::Number::RSSI_SCAN_C; }
+    const char *name() const override { return "RSSI_SC"; }
+    bool requires_armed_servos() const override { return true; }
+    void update() override;
+    void reset_for_entry();
+
+    float compass_handoff_pan_deg() const {
+        return _best_yaw_deg;
+    }
+    float compass_handoff_tilt_deg() const {
+        return _best_pitch_deg;
+    }
+    float compass_handoff_rssi_norm() const {
+        return MAX(_best_rssi_yaw, _best_rssi_pitch);
+    }
+
+private:
+    enum class Phase : uint8_t {
+        YAW_DRIVE = 0,
+        YAW_POINT,
+        PITCH_DRIVE,
+        PITCH_POINT,
+    };
+
+    Phase _phase {Phase::YAW_DRIVE};
+
+    float _yaw_start_deg {0.0f};
+    float _pitch_start_deg {0.0f};
+    float _yaw_arc_deg {360.0f};
+    float _pitch_arc_deg {60.0f};
+    int _yaw_step_deg {5};
+    int _pitch_step_deg {10};
+
+    int _yaw_next_k {0};
+    int _yaw_max_k {0};
+    float _best_yaw_deg {0.0f};
+    float _best_pitch_deg {0.0f};
+    float _best_rssi_yaw {0.0f};
+    float _best_rssi_pitch {0.0f};
+
+    int _pitch_next_k {0};
+    int _pitch_max_k {0};
+
+    uint32_t _last_progress_ms {0};
+    uint32_t _point_enter_ms {0};
+    uint16_t _point_stable {0};
+
+    bool _initialized {false};
+
+    // Cumulative scan progress (integrated heading/pitch motion), not chord span
+    // start→current, so AHRS alignment spikes do not instantly complete the arc.
+    float _prev_yaw_deg {0.0f};
+    float _yaw_cumulative_cw {0.0f};
+    float _prev_pitch_deg {0.0f};
+    float _pitch_cumulative_up {0.0f};
+
+    static float wrap_360_deg(float d);
+    float read_rssi_avg() const;
+    void apply_yaw_pitch_pwm(uint16_t yaw_pwm, uint16_t pitch_pwm);
+    void release_pwm_overrides();
+    void enter_yaw_point();
+    void enter_pitch_drive();
+    void enter_pitch_point();
+    void handoff_to_rssi_scan();
 };

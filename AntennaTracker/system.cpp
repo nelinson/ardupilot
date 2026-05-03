@@ -182,6 +182,16 @@ void Tracker::set_mode(Mode &newmode, const ModeReason reason)
         // don't switch modes if we are already in the correct mode.
         return;
     }
+    if (&newmode == &mode_rssi_scan_compass) {
+        mode_rssi_scan_compass.reset_for_entry();
+    }
+    if (&newmode == &mode_rssi_scan) {
+        if (mode == &mode_rssi_scan_compass) {
+            mode_rssi_scan.import_lock_from_compass_scan(mode_rssi_scan_compass);
+        } else {
+            mode_rssi_scan.reset_for_entry();
+        }
+    }
     mode = &newmode;
 
     if (mode->requires_armed_servos()) {
@@ -196,7 +206,14 @@ void Tracker::set_mode(Mode &newmode, const ModeReason reason)
 #endif
     gcs().send_message(MSG_HEARTBEAT);
 
-    nav_status.bearing = ahrs.get_yaw_deg();
+    float brg = ahrs.get_yaw_deg();
+    float pit = nav_status.pitch;
+    if (mode == &mode_rssi_scan && mode_rssi_scan.consume_handoff_nav(brg, pit)) {
+        nav_status.bearing = brg;
+        nav_status.pitch = pit;
+    } else {
+        nav_status.bearing = ahrs.get_yaw_deg();
+    }
 }
 
 bool Tracker::set_mode(const uint8_t new_mode, const ModeReason reason)
@@ -225,6 +242,9 @@ bool Tracker::set_mode(const uint8_t new_mode, const ModeReason reason)
         break;
     case Mode::Number::RSSI_SCAN:
         fred = &mode_rssi_scan;
+        break;
+    case Mode::Number::RSSI_SCAN_C:
+        fred = &mode_rssi_scan_compass;
         break;
     }
     if (fred == nullptr) {

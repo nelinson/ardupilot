@@ -146,6 +146,11 @@ public:
         k_param_rssi_lock_threshold,        // min RSSI% to consider locked
         k_param_rssi_dither_angle,          // ± degrees for maintenance dither
         k_param_rssi_rescan_drop,           // RSSI drop % that triggers re-scan
+        k_param_rssi_scy_pwm,
+        k_param_rssi_scy_arc,
+        k_param_rssi_scp_pwm,
+        k_param_rssi_scp_arc,
+        k_param_rssi_sc_to,
     };
 
     AP_Int16 format_version;
@@ -201,6 +206,11 @@ public:
     AP_Int8     rssi_lock_threshold;    // default 30 (%)
     AP_Int8     rssi_dither_angle;      // default 8  (degrees)
     AP_Int8     rssi_rescan_drop;       // default 20 (%)
+    AP_Int16    rssi_scy_pwm;           // compass RSSI scan yaw drive PWM (us)
+    AP_Int16    rssi_scy_arc;           // yaw scan arc (deg) from entry heading
+    AP_Int16    rssi_scp_pwm;           // compass RSSI scan pitch drive PWM (us)
+    AP_Int16    rssi_scp_arc;           // pitch scan arc (deg) from entry pitch
+    AP_Int16    rssi_sc_to;             // timeout (ms) with no compass progress
 
     Parameters() :
         pidPitch2Srv(0.2, 0.0f, 0.05f, 0.02f, 4000.0f, 0.0f, 0.0f, 0.0f, 0.1f),

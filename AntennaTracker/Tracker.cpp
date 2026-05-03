@@ -149,6 +149,9 @@ Mode *Tracker::mode_from_mode_num(const Mode::Number num)
     case Mode::Number::RSSI_SCAN:
         ret = &mode_rssi_scan;
         break;
+    case Mode::Number::RSSI_SCAN_C:
+        ret = &mode_rssi_scan_compass;
+        break;
     }
     return ret;
 }
