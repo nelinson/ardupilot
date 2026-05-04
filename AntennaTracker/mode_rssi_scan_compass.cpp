@@ -151,9 +151,14 @@ void ModeRSSIScanCompass::update()
         _prev_yaw_deg = _yaw_start_deg;
         _yaw_cumulative_cw = 0.0f;
 
-        const float yaw_tgt = wrap_360_deg(_yaw_start_deg + _yaw_arc_deg);
-        gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SC: Yaw start cur=%.0f tgt=%.0f arc=%.0f",
-                         (double)_yaw_start_deg, (double)yaw_tgt, (double)_yaw_arc_deg);
+        if (_yaw_arc_deg >= 359.5f) {
+            gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SC: Yaw start cur=%.0f arc=%.0f (CW full turn)",
+                             (double)_yaw_start_deg, (double)_yaw_arc_deg);
+        } else {
+            const float yaw_tgt = wrap_360_deg(_yaw_start_deg + _yaw_arc_deg);
+            gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SC: Yaw start cur=%.0f tgt=%.0f arc=%.0f",
+                             (double)_yaw_start_deg, (double)yaw_tgt, (double)_yaw_arc_deg);
+        }
 
         const uint16_t yaw_pwm = (uint16_t)constrain_int32(tracker.g.rssi_scy_pwm.get(), 800, 2200);
         uint16_t pitch_trim = 1500;
@@ -161,6 +166,9 @@ void ModeRSSIScanCompass::update()
             pitch_trim = pch->get_trim();
         }
         apply_yaw_pitch_pwm(yaw_pwm, pitch_trim);
+        // NAV_CONTROLLER_OUTPUT / logs: actual AHRS aim (rssi_sim and GCS use this; yaw not from PID here)
+        tracker.nav_status.bearing = wrap_360_deg(AP::ahrs().get_yaw_deg());
+        tracker.nav_status.pitch = AP::ahrs().get_pitch_deg();
         _last_progress_ms = AP_HAL::millis();
         _initialized = true;
     }
@@ -176,6 +184,9 @@ void ModeRSSIScanCompass::update()
             pitch_trim = pch->get_trim();
         }
         apply_yaw_pitch_pwm(yaw_pwm, pitch_trim);
+        // NAV_CONTROLLER_OUTPUT / logs: actual AHRS aim (rssi_sim and GCS use this; yaw not from PID here)
+        tracker.nav_status.bearing = wrap_360_deg(AP::ahrs().get_yaw_deg());
+        tracker.nav_status.pitch = AP::ahrs().get_pitch_deg();
 
         const float cur_yaw = wrap_360_deg(AP::ahrs().get_yaw_deg());
         const float dpsi = wrap_180(cur_yaw - _prev_yaw_deg);
@@ -242,6 +253,9 @@ void ModeRSSIScanCompass::update()
             yaw_trim = ych->get_trim();
         }
         apply_yaw_pitch_pwm(yaw_trim, pitch_pwm);
+        // NAV_CONTROLLER_OUTPUT / logs: actual AHRS aim (rssi_sim and GCS use this; pitch not from PID here)
+        tracker.nav_status.bearing = wrap_360_deg(AP::ahrs().get_yaw_deg());
+        tracker.nav_status.pitch = AP::ahrs().get_pitch_deg();
 
         const float cur_p = AP::ahrs().get_pitch_deg();
         const float dp = cur_p - _prev_pitch_deg;
