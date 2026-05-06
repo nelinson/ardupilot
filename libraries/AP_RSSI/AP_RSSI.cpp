@@ -890,7 +890,7 @@ void AP_RSSI::http_thread()
             // Second line: raw Solo8 fields (low rate) for calibration/debug.
             // Keep it short to avoid STATUSTEXT truncation.
             GCS_SEND_TEXT(MAV_SEVERITY_INFO,
-                          "RSSI_HTTP RX n:%d->%d snr:%.1f v:%u A0:%.1f B0:%.1f",
+                          "RSSI_HTTP RX n:%d->%d snr:%.0f v:%u A0:%.0f B0:%.0f",
                           int(snap_local_id),
                           int(snap_aircraft_id),
                           double(snap_snr_db),
@@ -898,10 +898,10 @@ void AP_RSSI::http_thread()
                           double(snap_sig_a_dbm),
                           double(snap_sig_b_dbm));
             if (snap_local_id >= 0 && snap_aircraft_id >= 0) {
-                GCS_SEND_TEXT(MAV_SEVERITY_INFO,
-                              "RSSI_HTTP mesh %d(%s)->%d(%s)",
-                              int(snap_local_id), snap_local_name,
-                              int(snap_aircraft_id), snap_aircraft_name);
+                // GCS_SEND_TEXT(MAV_SEVERITY_INFO,
+                //               "RSSI_HTTP mesh %d(%s)->%d(%s)",
+                //               int(snap_local_id), snap_local_name,
+                //               int(snap_aircraft_id), snap_aircraft_name);
             } else {
                 GCS_SEND_TEXT(MAV_SEVERITY_INFO,
                               "RSSI_HTTP mesh undiscovered st:%lu/%lu prs:%lu",

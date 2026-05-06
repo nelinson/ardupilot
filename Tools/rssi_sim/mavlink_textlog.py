@@ -23,6 +23,28 @@ import sys
 import time
 
 
+MAV_SEVERITY_STR = {
+    0: "EMERGENCY",
+    1: "ALERT",
+    2: "CRITICAL",
+    3: "ERROR",
+    4: "WARNING",
+    5: "NOTICE",
+    6: "INFO",
+    7: "DEBUG",
+}
+
+
+def severity_to_str(sev: object) -> str:
+    if sev is None:
+        return "UNKNOWN"
+    try:
+        sev_i = int(sev)
+    except Exception:
+        return f"UNKNOWN({sev})"
+    return MAV_SEVERITY_STR.get(sev_i, f"UNKNOWN({sev_i})")
+
+
 def utc_ts() -> str:
     # Use timezone-aware UTC timestamps (Python 3.12+ warns on utcnow()).
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -106,7 +128,7 @@ def main() -> int:
                 if isinstance(txt, (bytes, bytearray)):
                     txt = txt.decode(errors="replace")
                 sev = getattr(msg, "severity", None)
-                line = f"{prefix} STATUSTEXT sev={sev} {txt}".rstrip()
+                line = f"{prefix} {severity_to_str(sev)} {txt}".rstrip()
             else:
                 line = f"{prefix} {mtype} {msg.to_dict()}"
 

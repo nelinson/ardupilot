@@ -24,10 +24,13 @@
 
 #include <string.h>
 
+static constexpr uint32_t RSSI_RESCAN_GRACE_MS = 3000;
+
 void ModeRSSIScan::reset_for_entry()
 {
     _initialized = false;
     _handoff_lock_from_sc = false;
+    _lock_acquired_ms = 0;
 }
 
 bool ModeRSSIScan::consume_handoff_nav(float &bearing_deg, float &pitch_deg)
@@ -67,6 +70,7 @@ void ModeRSSIScan::import_lock_from_compass_scan(const ModeRSSIScanCompass &sc)
     _tilt_current = tilt;
     _rssi_best = rssi_lock;
     _rssi_at_lock = rssi_lock;
+    _lock_acquired_ms = AP_HAL::millis();
     _initialized = true;
     _handoff_lock_from_sc = true;
     _dither_step = 0;
@@ -198,6 +202,7 @@ void ModeRSSIScan::update_scan_tilt()
         }
 
         _rssi_at_lock = _rssi_best;
+        _lock_acquired_ms = AP_HAL::millis();
         start_dither();
         return;
     }
@@ -223,8 +228,16 @@ void ModeRSSIScan::update_dither()
 
     // Check for signal loss → re-scan
     float current_rssi = read_rssi_avg();
+    // After lock/handoff, allow a short grace period so transient RSSI settling
+    // does not trigger immediate full re-scan.
+    const uint32_t now = AP_HAL::millis();
+    if ((now - _lock_acquired_ms) < RSSI_RESCAN_GRACE_MS) {
+        // Keep lock anchor fresh during grace so threshold starts from actual held signal.
+        _rssi_at_lock = MAX(_rssi_at_lock, current_rssi);
+    }
     float drop_threshold = _rssi_at_lock - (tracker.g.rssi_rescan_drop * 0.01f);
-    if (current_rssi < drop_threshold) {
+    if ((now - _lock_acquired_ms) >= RSSI_RESCAN_GRACE_MS &&
+        current_rssi < drop_threshold) {
         gcs().send_text(MAV_SEVERITY_WARNING,
             "RSSI_SCAN: Signal dropped (%.0f%%), re-scanning",
             (double)(current_rssi * 100.0f));

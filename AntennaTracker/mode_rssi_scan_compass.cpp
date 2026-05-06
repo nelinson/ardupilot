@@ -16,6 +16,7 @@
 #endif
 
 #include <AP_Vehicle/ModeReason.h>
+#include <AP_AHRS/AP_AHRS.h>
 
 void ModeRSSIScanCompass::handoff_to_rssi_scan()
 {
@@ -32,6 +33,12 @@ void ModeRSSIScanCompass::reset_for_entry()
     _point_stable = 0;
     _yaw_cumulative_cw = 0.0f;
     _pitch_cumulative_up = 0.0f;
+    _debug_last_ms = 0;
+    _entry_ms = 0;
+    _yaw_settle_until_ms = 0;
+    _yaw_nomotion_start_ms = 0;
+    _yaw_drive_started = false;
+    _yaw_progress_sign = 0;
 }
 
 static constexpr float POINT_ERR_DEG = 2.0f;
@@ -104,12 +111,10 @@ void ModeRSSIScanCompass::enter_pitch_drive()
     gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SC: Pitch start cur=%.0f tgt=%.0f arc=%.0f",
                      (double)_pitch_start_deg, (double)pitch_tgt, (double)_pitch_arc_deg);
 
-    uint16_t yaw_trim = 1500;
-    uint16_t pitch_pwm = uint16_t(tracker.g.rssi_scp_pwm.get());
-    if (SRV_Channel *ych = SRV_Channels::get_channel_for(SRV_Channel::k_tracker_yaw)) {
-        yaw_trim = ych->get_trim();
-    }
-    apply_yaw_pitch_pwm(yaw_trim, pitch_pwm);
+    // Hold yaw neutral during pitch drive. On continuous-rotation yaw setups,
+    // using the channel trim here can unintentionally command rotation.
+    const uint16_t pitch_pwm = uint16_t(tracker.g.rssi_scp_pwm.get());
+    apply_yaw_pitch_pwm(1500, pitch_pwm);
     _last_progress_ms = AP_HAL::millis();
     _phase = Phase::PITCH_DRIVE;
 }
@@ -141,6 +146,14 @@ void ModeRSSIScanCompass::update()
 #endif
 
     if (!_initialized) {
+        _entry_ms = AP_HAL::millis();
+        // Allow AHRS/EKF to finish initial yaw alignment before we start integrating scan progress.
+        // Without this, heading "jumps" during startup can consume the whole arc without any servo motion.
+        _yaw_settle_until_ms = _entry_ms + 3000;
+        _yaw_nomotion_start_ms = 0;
+        _yaw_drive_started = false;
+        _yaw_progress_sign = 0;
+
         _yaw_start_deg = wrap_360_deg(AP::ahrs().get_yaw_deg());
         _yaw_arc_deg = constrain_float(float(tracker.g.rssi_scy_arc.get()), 1.0f, 360.0f);
         _yaw_step_deg = MAX(1, (int)tracker.g.rssi_scan_pan_step.get());
@@ -160,12 +173,12 @@ void ModeRSSIScanCompass::update()
                              (double)_yaw_start_deg, (double)yaw_tgt, (double)_yaw_arc_deg);
         }
 
-        const uint16_t yaw_pwm = (uint16_t)constrain_int32(tracker.g.rssi_scy_pwm.get(), 800, 2200);
         uint16_t pitch_trim = 1500;
         if (SRV_Channel *pch = SRV_Channels::get_channel_for(SRV_Channel::k_tracker_pitch)) {
             pitch_trim = pch->get_trim();
         }
-        apply_yaw_pitch_pwm(yaw_pwm, pitch_trim);
+        // Keep yaw neutral while AHRS/EKF settles at startup; do not spin yet.
+        apply_yaw_pitch_pwm(1500, pitch_trim);
         // NAV_CONTROLLER_OUTPUT / logs: actual AHRS aim (rssi_sim and GCS use this; yaw not from PID here)
         tracker.nav_status.bearing = wrap_360_deg(AP::ahrs().get_yaw_deg());
         tracker.nav_status.pitch = AP::ahrs().get_pitch_deg();
@@ -183,16 +196,108 @@ void ModeRSSIScanCompass::update()
         if (SRV_Channel *pch = SRV_Channels::get_channel_for(SRV_Channel::k_tracker_pitch)) {
             pitch_trim = pch->get_trim();
         }
-        apply_yaw_pitch_pwm(yaw_pwm, pitch_trim);
-        // NAV_CONTROLLER_OUTPUT / logs: actual AHRS aim (rssi_sim and GCS use this; yaw not from PID here)
-        tracker.nav_status.bearing = wrap_360_deg(AP::ahrs().get_yaw_deg());
-        tracker.nav_status.pitch = AP::ahrs().get_pitch_deg();
 
         const float cur_yaw = wrap_360_deg(AP::ahrs().get_yaw_deg());
         const float dpsi = wrap_180(cur_yaw - _prev_yaw_deg);
+
+        // Stay neutral until settle completes; this avoids many physical turns during EKF startup.
+        if (now < _yaw_settle_until_ms) {
+            apply_yaw_pitch_pwm(1500, pitch_trim);
+            tracker.nav_status.bearing = cur_yaw;
+            tracker.nav_status.pitch = AP::ahrs().get_pitch_deg();
+            _prev_yaw_deg = cur_yaw;
+            _yaw_nomotion_start_ms = 0;
+            break;
+        }
+
+        if (!_yaw_drive_started) {
+            _yaw_drive_started = true;
+            _prev_yaw_deg = cur_yaw;
+            _yaw_nomotion_start_ms = 0;
+            _yaw_progress_sign = 0;
+            _last_progress_ms = now;
+            gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SC: Yaw drive start pwm=%u", unsigned(yaw_pwm));
+        }
+
+        apply_yaw_pitch_pwm(yaw_pwm, pitch_trim);
+        // NAV_CONTROLLER_OUTPUT / logs: actual AHRS aim (rssi_sim and GCS use this; yaw not from PID here)
+        tracker.nav_status.bearing = cur_yaw;
+        tracker.nav_status.pitch = AP::ahrs().get_pitch_deg();
         _prev_yaw_deg = cur_yaw;
-        if (dpsi > 0.0f) {
-            _yaw_cumulative_cw += MIN(dpsi, MAX_YAW_DEG_PER_TICK);
+
+        // Robust CW integration:
+        // - only integrate once we've passed the initial settle window
+        // - only integrate if we're actually commanding motion (PWM away from 1500)
+        // - only integrate in the commanded direction (CW is PWM < 1500)
+        const int16_t pwm_delta = int16_t(yaw_pwm) - 1500;
+        const bool cmd_cw = (pwm_delta < -10);
+        const bool cmd_ccw = (pwm_delta > 10);
+        const bool cmd_moving = cmd_cw || cmd_ccw;
+
+        // Determine which way AHRS yaw moves for the commanded rotation.
+        // On some installations the reported yaw can move with opposite sign to the physical CW direction.
+        if (_yaw_progress_sign == 0 && cmd_moving && fabsf(dpsi) > 0.05f) {
+            _yaw_progress_sign = (dpsi > 0.0f) ? 1 : -1;
+        }
+
+        // If we are commanding rotation but AHRS yaw is not changing, stop early.
+        // This prevents multiple physical revolutions when yaw feedback is unhealthy/misconfigured.
+        if (cmd_moving) {
+            const bool yaw_moving = (fabsf(dpsi) > 0.05f);
+            if (!yaw_moving) {
+                if (_yaw_nomotion_start_ms == 0) {
+                    _yaw_nomotion_start_ms = now;
+                } else if (now - _yaw_nomotion_start_ms > 2000) {
+                    // hard stop continuous-rotation servo at neutral PWM
+                    SRV_Channels::set_output_pwm(SRV_Channel::k_tracker_yaw, 1500);
+                    SRV_Channels::constrain_pwm(SRV_Channel::k_tracker_yaw);
+                    gcs().send_text(MAV_SEVERITY_WARNING,
+                                    "RSSI_SC: yaw not moving (dpsi=%.2f), stopping scan",
+                                    (double)dpsi);
+                    // Abort yaw phase without entering YAW_POINT. If we enter YAW_POINT, update_auto()
+                    // can keep driving yaw for up to POINT_TIMEOUT_MS and cause extra revolutions.
+                    // Keep current yaw as best estimate and continue directly to pitch scan.
+                    _best_yaw_deg = cur_yaw;
+                    enter_pitch_drive();
+                    break;
+                }
+            } else {
+                _yaw_nomotion_start_ms = 0;
+            }
+        } else {
+            _yaw_nomotion_start_ms = 0;
+        }
+
+        if (cmd_moving) {
+            // Integrate yaw progress using the observed sign, so a single turn completes even if
+            // reported yaw moves "backwards" for this installation.
+            if (_yaw_progress_sign > 0 && dpsi > 0.0f) {
+                _yaw_cumulative_cw += MIN(dpsi, MAX_YAW_DEG_PER_TICK);
+            } else if (_yaw_progress_sign < 0 && dpsi < 0.0f) {
+                _yaw_cumulative_cw += MIN(-dpsi, MAX_YAW_DEG_PER_TICK);
+            }
+        }
+
+        // Rate-limited debug to diagnose arc progression issues on real hardware.
+        // Prints both the raw yaw delta (dpsi) and the integrated CW accumulator.
+        if (now - _debug_last_ms >= 1000) {
+            _debug_last_ms = now;
+            const float next_thr = float(_yaw_next_k * _yaw_step_deg);
+            const uint32_t age_ms = now - _last_progress_ms;
+            const Vector3f gyro = AP::ahrs().get_gyro(); // rad/s body frame
+            const uint16_t yaw_pwm_dbg = yaw_pwm;
+            gcs().send_text(MAV_SEVERITY_INFO,
+                            "RSSI_SC: Ydbg pwm=%u yaw=%.1f dpsi=%.1f cw=%.1f/%0.0f next=%.0f age=%lu gxyz=%.3f/%.3f/%.3f",
+                            unsigned(yaw_pwm_dbg),
+                            (double)cur_yaw,
+                            (double)dpsi,
+                            (double)_yaw_cumulative_cw,
+                            (double)_yaw_arc_deg,
+                            (double)next_thr,
+                            (unsigned long)age_ms,
+                            (double)gyro.x,
+                            (double)gyro.y,
+                            (double)gyro.z);
         }
 
         if (_yaw_cumulative_cw + 0.5f >= _yaw_arc_deg) {
@@ -247,12 +352,9 @@ void ModeRSSIScanCompass::update()
     }
 
     case Phase::PITCH_DRIVE: {
-        uint16_t yaw_trim = 1500;
+        const uint16_t yaw_neutral = 1500;
         const uint16_t pitch_pwm = (uint16_t)constrain_int32(tracker.g.rssi_scp_pwm.get(), 800, 2200);
-        if (SRV_Channel *ych = SRV_Channels::get_channel_for(SRV_Channel::k_tracker_yaw)) {
-            yaw_trim = ych->get_trim();
-        }
-        apply_yaw_pitch_pwm(yaw_trim, pitch_pwm);
+        apply_yaw_pitch_pwm(yaw_neutral, pitch_pwm);
         // NAV_CONTROLLER_OUTPUT / logs: actual AHRS aim (rssi_sim and GCS use this; pitch not from PID here)
         tracker.nav_status.bearing = wrap_360_deg(AP::ahrs().get_yaw_deg());
         tracker.nav_status.pitch = AP::ahrs().get_pitch_deg();

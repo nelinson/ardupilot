@@ -173,6 +173,7 @@ private:
 
     // ---------- timing ----------
     uint32_t _settle_start_ms   {0};
+    uint32_t _lock_acquired_ms  {0};
 
     // ---------- helpers ----------
     float   read_rssi_avg();
@@ -235,8 +236,14 @@ private:
     int _pitch_max_k {0};
 
     uint32_t _last_progress_ms {0};
+    uint32_t _debug_last_ms {0};
     uint32_t _point_enter_ms {0};
     uint16_t _point_stable {0};
+    uint32_t _entry_ms {0};
+    uint32_t _yaw_settle_until_ms {0};
+    uint32_t _yaw_nomotion_start_ms {0};
+    bool _yaw_drive_started {false};
+    int8_t _yaw_progress_sign {0}; // +1 or -1 once motion observed; 0 unknown
 
     bool _initialized {false};
 

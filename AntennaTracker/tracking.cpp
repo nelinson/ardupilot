@@ -84,6 +84,8 @@ void Tracker::update_bearing_and_distance()
  */
 void Tracker::update_tracking(void)
 {
+    static bool safety_disarmed_warned = false;
+
     // update vehicle position estimate
     update_vehicle_pos_estimate();
 
@@ -101,6 +103,11 @@ void Tracker::update_tracking(void)
 
     // do not perform updates if safety switch is disarmed (i.e. servos can't be moved)
     if (hal.util->safety_switch_state() == AP_HAL::Util::SAFETY_DISARMED) {
+        if (!safety_disarmed_warned) {
+            safety_disarmed_warned = true;
+            gcs().send_text(MAV_SEVERITY_WARNING,
+                            "Tracker: SAFETY_DISARMED blocks servo updates (check BRD_SAFETY*)");
+        }
         return;
     }
 

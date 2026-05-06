@@ -5,6 +5,8 @@ static const StorageAccess wp_storage(StorageManager::StorageMission);
 
 void Tracker::init_ardupilot()
 {
+    gcs().send_text(MAV_SEVERITY_INFO, "Tracker: init_ardupilot()");
+
     // initialise notify
     notify.init();
     AP_Notify::flags.pre_arm_check = true;
@@ -75,8 +77,14 @@ void Tracker::init_ardupilot()
 
     hal.scheduler->delay(1000); // Why????
 
-    Mode *newmode = mode_from_mode_num((Mode::Number)g.initial_mode.get());
+    const uint8_t initial_mode_u8 = (uint8_t)g.initial_mode.get();
+    gcs().send_text(MAV_SEVERITY_INFO, "Tracker: INITIAL_MODE=%u (startup)", (unsigned)initial_mode_u8);
+
+    Mode *newmode = mode_from_mode_num((Mode::Number)initial_mode_u8);
     if (newmode == nullptr) {
+        gcs().send_text(MAV_SEVERITY_WARNING,
+                        "Tracker: invalid INITIAL_MODE=%u, falling back to MANUAL",
+                        (unsigned)initial_mode_u8);
         newmode = &mode_manual;
     }
     set_mode(*newmode, ModeReason::STARTUP);
@@ -180,8 +188,20 @@ void Tracker::set_mode(Mode &newmode, const ModeReason reason)
 
     if (mode == &newmode) {
         // don't switch modes if we are already in the correct mode.
+        gcs().send_text(MAV_SEVERITY_INFO, "Tracker: mode unchanged (%s) reason=%u",
+                        newmode.name(), (unsigned)reason);
         return;
     }
+
+    const char *from_name = (mode != nullptr) ? mode->name() : "NONE";
+    const uint8_t from_num = (mode != nullptr) ? (uint8_t)mode->number() : 255U;
+    gcs().send_text(MAV_SEVERITY_INFO, "Tracker: mode change %s(%u)->%s(%u) reason=%u safety=%u softarm=%u",
+                    from_name, (unsigned)from_num,
+                    newmode.name(), (unsigned)(uint8_t)newmode.number(),
+                    (unsigned)reason,
+                    (unsigned)hal.util->safety_switch_state(),
+                    (unsigned)hal.util->get_soft_armed());
+
     if (&newmode == &mode_rssi_scan_compass) {
         mode_rssi_scan_compass.reset_for_entry();
     }
@@ -199,6 +219,11 @@ void Tracker::set_mode(Mode &newmode, const ModeReason reason)
     } else {
         disarm_servos();
     }
+
+    gcs().send_text(MAV_SEVERITY_INFO, "Tracker: mode now %s(%u) safety=%u softarm=%u",
+                    mode->name(), (unsigned)(uint8_t)mode->number(),
+                    (unsigned)hal.util->safety_switch_state(),
+                    (unsigned)hal.util->get_soft_armed());
 
 #if HAL_LOGGING_ENABLED
 	// log mode change
@@ -219,8 +244,11 @@ void Tracker::set_mode(Mode &newmode, const ModeReason reason)
 bool Tracker::set_mode(const uint8_t new_mode, const ModeReason reason)
 {
     Mode *fred = nullptr;
+    gcs().send_text(MAV_SEVERITY_INFO, "Tracker: set_mode request %u reason=%u",
+                    (unsigned)new_mode, (unsigned)reason);
     switch ((Mode::Number)new_mode) {
     case Mode::Number::INITIALISING:
+        gcs().send_text(MAV_SEVERITY_WARNING, "Tracker: reject set_mode(%u)=INITIALISING", (unsigned)new_mode);
         return false;
     case Mode::Number::AUTO:
         fred = &mode_auto;
@@ -248,6 +276,7 @@ bool Tracker::set_mode(const uint8_t new_mode, const ModeReason reason)
         break;
     }
     if (fred == nullptr) {
+        gcs().send_text(MAV_SEVERITY_WARNING, "Tracker: set_mode(%u) unknown", (unsigned)new_mode);
         return false;
     }
     set_mode(*fred, reason);
