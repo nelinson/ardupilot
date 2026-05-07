@@ -36,6 +36,8 @@ void ModeRSSIScanCompass::reset_for_entry()
     _debug_last_ms = 0;
     _entry_ms = 0;
     _yaw_settle_until_ms = 0;
+    _rssi_wait_until_ms = 0;
+    _rssi_wait_last_msg_ms = 0;
     _yaw_nomotion_start_ms = 0;
     _yaw_drive_started = false;
     _yaw_progress_sign = 0;
@@ -145,11 +147,31 @@ void ModeRSSIScanCompass::update()
     }
 #endif
 
+    auto rssi_link_ready = []() -> bool {
+        AP_RSSI *rssi = AP::rssi();
+        if (rssi == nullptr) {
+            return false;
+        }
+#if AP_RSSI_HTTP_ENABLED
+        if (rssi->type() == AP_RSSI::RssiType::SOLO8_HTTP) {
+            // This returns -1 until SOLO8_HTTP has a *recent valid* reading,
+            // which implies mesh discovery + successful localrfstatus parse.
+            return rssi->read_receiver_link_quality() > -0.5f;
+        }
+#endif
+        // Non-HTTP backends don't have a reliable "ready" event; don't block.
+        return true;
+    };
+
     if (!_initialized) {
         _entry_ms = AP_HAL::millis();
         // Allow AHRS/EKF to finish initial yaw alignment before we start integrating scan progress.
         // Without this, heading "jumps" during startup can consume the whole arc without any servo motion.
         _yaw_settle_until_ms = _entry_ms + 3000;
+        // Give the RSSI backend a moment to produce its first valid sample
+        // (especially important for HTTP mesh discovery at boot).
+        _rssi_wait_until_ms = _entry_ms + 30000;
+        _rssi_wait_last_msg_ms = 0;
         _yaw_nomotion_start_ms = 0;
         _yaw_drive_started = false;
         _yaw_progress_sign = 0;
@@ -200,6 +222,22 @@ void ModeRSSIScanCompass::update()
         const float cur_yaw = wrap_360_deg(AP::ahrs().get_yaw_deg());
         const float dpsi = wrap_180(cur_yaw - _prev_yaw_deg);
 
+        // Before we start scanning, wait briefly for a valid RSSI reading.
+        // Without this, RSSI_SC can complete its yaw sweep while the HTTP backend
+        // is still discovering the mesh / first link sample, producing all-zero RSSI.
+        if (!rssi_link_ready() && now < _rssi_wait_until_ms) {
+            apply_yaw_pitch_pwm(1500, pitch_trim);
+            tracker.nav_status.bearing = cur_yaw;
+            tracker.nav_status.pitch = AP::ahrs().get_pitch_deg();
+            _prev_yaw_deg = cur_yaw;
+            _yaw_nomotion_start_ms = 0;
+            if (_rssi_wait_last_msg_ms == 0 || (now - _rssi_wait_last_msg_ms) > 2000) {
+                _rssi_wait_last_msg_ms = now;
+                gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SC: waiting for RSSI link");
+            }
+            break;
+        }
+
         // Stay neutral until settle completes; this avoids many physical turns during EKF startup.
         if (now < _yaw_settle_until_ms) {
             apply_yaw_pitch_pwm(1500, pitch_trim);
@@ -247,7 +285,7 @@ void ModeRSSIScanCompass::update()
             if (!yaw_moving) {
                 if (_yaw_nomotion_start_ms == 0) {
                     _yaw_nomotion_start_ms = now;
-                } else if (now - _yaw_nomotion_start_ms > 2000) {
+                } else if (now - _yaw_nomotion_start_ms > 5000) {
                     // hard stop continuous-rotation servo at neutral PWM
                     SRV_Channels::set_output_pwm(SRV_Channel::k_tracker_yaw, 1500);
                     SRV_Channels::constrain_pwm(SRV_Channel::k_tracker_yaw);

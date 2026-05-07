@@ -64,6 +64,9 @@ public:
     // return true if rssi reading is enabled
     bool enabled() const { return RssiType(rssi_type.get()) != RssiType::TYPE_DISABLED; }
 
+    // current RSSI backend type
+    RssiType type() const { return RssiType(rssi_type.get()); }
+
     // Read the receiver RSSI value as a float 0.0f - 1.0f.
     // 0.0 represents weakest signal, 1.0 represents maximum signal.
     float read_receiver_rssi();

@@ -241,6 +241,8 @@ private:
     uint16_t _point_stable {0};
     uint32_t _entry_ms {0};
     uint32_t _yaw_settle_until_ms {0};
+    uint32_t _rssi_wait_until_ms {0};
+    uint32_t _rssi_wait_last_msg_ms {0};
     uint32_t _yaw_nomotion_start_ms {0};
     bool _yaw_drive_started {false};
     int8_t _yaw_progress_sign {0}; // +1 or -1 once motion observed; 0 unknown
