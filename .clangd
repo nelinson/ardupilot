@@ -1,2 +1,4 @@
 CompileFlags:
-  CompilationDatabase: build/sitl
+  # Must match `./waf configure --board Pixhawk6X-TrackerEth` output tree.
+  # Generate with: configure that board, then `./waf antennatracker` (or any target).
+  CompilationDatabase: build/Pixhawk6X-TrackerEth
