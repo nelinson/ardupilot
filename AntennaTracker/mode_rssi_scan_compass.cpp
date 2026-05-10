@@ -20,6 +20,21 @@
 
 void ModeRSSIScanCompass::handoff_to_rssi_scan()
 {
+    uint32_t eq360_ms = _yaw_scan_elapsed_ms;
+    if (_yaw_scan_elapsed_ms > 0 && _yaw_arc_deg > 0.1f) {
+        eq360_ms = uint32_t((float)_yaw_scan_elapsed_ms * (360.0f / _yaw_arc_deg));
+    }
+    int16_t http_rate_hz = -1;
+#if AP_RSSI_ENABLED
+    if (AP_RSSI *rssi = AP::rssi()) {
+        http_rate_hz = rssi->get_http_rate_hz();
+    }
+#endif
+    gcs().send_text(MAV_SEVERITY_INFO,
+                    "RSSI_SC: yaw=%lus eq360=%lus HTTP_RATE=%d",
+                    (unsigned long)(_yaw_scan_elapsed_ms / 1000U),
+                    (unsigned long)(eq360_ms / 1000U),
+                    int(http_rate_hz));
     gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SC: handoff RSSI_SCAN");
     tracker.set_mode(tracker.mode_rssi_scan, ModeReason::MISSION_END);
 }
@@ -41,6 +56,8 @@ void ModeRSSIScanCompass::reset_for_entry()
     _yaw_nomotion_start_ms = 0;
     _yaw_drive_started = false;
     _yaw_progress_sign = 0;
+    _yaw_drive_start_ms = 0;
+    _yaw_scan_elapsed_ms = 0;
 }
 
 static constexpr float POINT_ERR_DEG = 2.0f;
@@ -250,6 +267,7 @@ void ModeRSSIScanCompass::update()
 
         if (!_yaw_drive_started) {
             _yaw_drive_started = true;
+            _yaw_drive_start_ms = now;
             _prev_yaw_deg = cur_yaw;
             _yaw_nomotion_start_ms = 0;
             _yaw_progress_sign = 0;
@@ -339,6 +357,9 @@ void ModeRSSIScanCompass::update()
         }
 
         if (_yaw_cumulative_cw + 0.5f >= _yaw_arc_deg) {
+            if (_yaw_drive_start_ms != 0) {
+                _yaw_scan_elapsed_ms = now - _yaw_drive_start_ms;
+            }
             gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SC: Yaw done best=%.0f rssi=%.0f%%",
                              (double)_best_yaw_deg, (double)(MAX(0.0f, _best_rssi_yaw) * 100.0f));
             gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SC: Go yaw %.0f", (double)_best_yaw_deg);
@@ -360,6 +381,9 @@ void ModeRSSIScanCompass::update()
         }
 
         if (now - _last_progress_ms > to_ms) {
+            if (_yaw_drive_start_ms != 0) {
+                _yaw_scan_elapsed_ms = now - _yaw_drive_start_ms;
+            }
             gcs().send_text(MAV_SEVERITY_WARNING, "RSSI_SC: Yaw timeout");
             gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SC: Yaw done best=%.0f rssi=%.0f%%",
                             (double)_best_yaw_deg, (double)(MAX(0.0f, _best_rssi_yaw) * 100.0f));

@@ -166,6 +166,10 @@ private:
     float   _tilt_best          {0.0f};
     float   _rssi_best          {0.0f};
     float   _rssi_at_lock       {0.0f};   // RSSI when we declared lock
+    bool    _pan_scan_is_local  {false};
+    float   _pan_scan_start_deg {0.0f};
+    float   _pan_scan_arc_deg   {360.0f};
+    float   _pan_scan_progress_deg {0.0f};
 
     // ---------- dither ----------
     int8_t  _dither_step        {0};      // -1, 0, +1 for pan/tilt cycle
@@ -180,6 +184,7 @@ private:
     void    move_and_wait(float pan_deg, float tilt_deg, ScanState next);
     void    set_servos(float pan_deg, float tilt_deg);
     void    start_pan_scan();
+    void    start_pan_local_rescan();
     void    start_tilt_scan();
     void    start_dither();
 
@@ -246,6 +251,8 @@ private:
     uint32_t _yaw_nomotion_start_ms {0};
     bool _yaw_drive_started {false};
     int8_t _yaw_progress_sign {0}; // +1 or -1 once motion observed; 0 unknown
+    uint32_t _yaw_drive_start_ms {0};
+    uint32_t _yaw_scan_elapsed_ms {0};
 
     bool _initialized {false};
 

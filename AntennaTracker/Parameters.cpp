@@ -631,6 +631,21 @@ const AP_Param::Info Tracker::var_info[] = {
     // @Units: ms
     // @User: Standard
     GSCALAR(rssi_sc_to,          "RSSI_SC_TO",     30000),
+
+    // @Param: RSSI_RSCAN_ARC
+    // @DisplayName: RSSI local rescan pan arc
+    // @Description: Degrees of pan scanned around last lock when RSSI drops below RSSI_RESCAN_DROP. The sweep is centered on the last best pan angle.
+    // @Range: 10 360
+    // @Units: deg
+    // @User: Standard
+    GSCALAR(rssi_rescan_local_arc, "RSSI_RSCAN_ARC", 120),
+
+    // @Param: RSSI_RSCAN_FBK
+    // @DisplayName: RSSI local rescan full fallback
+    // @Description: When enabled, a weak local-rescan result falls back to a full 0-360 pan sweep. When disabled, local rescan is retried.
+    // @Values: 0:Disabled,1:Enabled
+    // @User: Standard
+    GSCALAR(rssi_rescan_fallback, "RSSI_RSCAN_FBK", 1),
     /*NatiE end*/
 
     AP_VAREND

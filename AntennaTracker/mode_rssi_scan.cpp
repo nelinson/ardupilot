@@ -7,7 +7,8 @@
  *   3. Sweep tilt min→max at best pan, record RSSI at each step
  *   4. Move to best pan+tilt → LOCKED
  *   5. Dither ± RSSI_DITHER degrees on each axis to maintain peak
- *   6. If RSSI drops > RSSI_RESCAN_DROP from lock value → re-scan
+ *   6. If RSSI drops > RSSI_RESCAN_DROP from lock value → local pan re-scan
+ *      around the last best yaw; fallback to full pan sweep if needed.
  *
  * RSSI input: PWM signal via AP_RSSI (RSSI_TYPE=2)
  */
@@ -24,6 +25,10 @@ void ModeRSSIScan::reset_for_entry()
     _initialized = false;
     _handoff_lock_from_sc = false;
     _lock_acquired_ms = 0;
+    _pan_scan_is_local = false;
+    _pan_scan_start_deg = 0.0f;
+    _pan_scan_arc_deg = 360.0f;
+    _pan_scan_progress_deg = 0.0f;
 }
 
 bool ModeRSSIScan::consume_handoff_nav(float &bearing_deg, float &pitch_deg)
@@ -124,9 +129,37 @@ void ModeRSSIScan::start_pan_scan()
 
     // Start at configured midpoint of mechanical tilt range.
     _tilt_current = (tracker.g.pitch_min + tracker.g.pitch_max) * 0.5f;
-    _pan_current  = 0.0f;
+    _pan_scan_is_local = false;
+    _pan_scan_start_deg = 0.0f;
+    _pan_scan_arc_deg = 360.0f;
+    _pan_scan_progress_deg = 0.0f;
+    _pan_current = _pan_scan_start_deg;
 
     gcs().send_text(MAV_SEVERITY_INFO, "RSSI_SCAN: Pan sweep 0-360 deg starting");
+    move_and_wait(_pan_current, _tilt_current, ScanState::SCAN_PAN);
+}
+
+void ModeRSSIScan::start_pan_local_rescan()
+{
+    _handoff_lock_from_sc = false;
+    const float local_center = wrap_360(_pan_best);
+    const float local_arc = constrain_float(float(tracker.g.rssi_rescan_local_arc.get()), 10.0f, 360.0f);
+    const float half_arc = 0.5f * local_arc;
+
+    _pan_best = local_center;
+    _rssi_best = 0.0f;
+    _pan_scan_is_local = true;
+    _pan_scan_start_deg = wrap_360(local_center - half_arc);
+    _pan_scan_arc_deg = local_arc;
+    _pan_scan_progress_deg = 0.0f;
+    _pan_current = _pan_scan_start_deg;
+    _tilt_current = constrain_float(_tilt_best, tracker.g.pitch_min, tracker.g.pitch_max);
+
+    gcs().send_text(MAV_SEVERITY_INFO,
+                    "RSSI_SCAN: Local pan rescan start=%.1f arc=%.0f center=%.1f",
+                    (double)_pan_scan_start_deg,
+                    (double)_pan_scan_arc_deg,
+                    (double)local_center);
     move_and_wait(_pan_current, _tilt_current, ScanState::SCAN_PAN);
 }
 
@@ -139,17 +172,25 @@ void ModeRSSIScan::update_scan_pan()
         _pan_best   = _pan_current;
     }
 
-    _pan_current += tracker.g.rssi_scan_pan_step;
+    const float step_deg = MAX(1.0f, float(tracker.g.rssi_scan_pan_step.get()));
+    _pan_scan_progress_deg += step_deg;
 
-    if (_pan_current > 360.0f) {
-        // Pan sweep done (full circle in 0..360° convention)
-        gcs().send_text(MAV_SEVERITY_INFO,
-            "RSSI_SCAN: Pan done. Best %.1f deg  RSSI %.0f%%",
-            (double)_pan_best, (double)(_rssi_best * 100.0f));
+    if (_pan_scan_progress_deg > _pan_scan_arc_deg) {
+        if (_pan_scan_is_local) {
+            gcs().send_text(MAV_SEVERITY_INFO,
+                "RSSI_SCAN: Local pan done. Best %.1f deg RSSI %.0f%%",
+                (double)_pan_best, (double)(_rssi_best * 100.0f));
+        } else {
+            // Pan sweep done (full circle in 0..360° convention)
+            gcs().send_text(MAV_SEVERITY_INFO,
+                "RSSI_SCAN: Pan done. Best %.1f deg  RSSI %.0f%%",
+                (double)_pan_best, (double)(_rssi_best * 100.0f));
+        }
         start_tilt_scan();
         return;
     }
 
+    _pan_current = wrap_360(_pan_scan_start_deg + _pan_scan_progress_deg);
     move_and_wait(_pan_current, _tilt_current, ScanState::SCAN_PAN);
 }
 
@@ -187,10 +228,22 @@ void ModeRSSIScan::update_scan_tilt()
             (double)(_rssi_best * 100.0f));
 
         if (_rssi_best < (tracker.g.rssi_lock_threshold * 0.01f)) {
-            gcs().send_text(MAV_SEVERITY_WARNING,
-                "RSSI_SCAN: Signal too weak (%.0f%%), re-scanning",
-                (double)(_rssi_best * 100.0f));
-            start_pan_scan();
+            if (_pan_scan_is_local && tracker.g.rssi_rescan_fallback.get() > 0) {
+                gcs().send_text(MAV_SEVERITY_WARNING,
+                    "RSSI_SCAN: Local rescan weak (%.0f%%), full scan fallback",
+                    (double)(_rssi_best * 100.0f));
+                start_pan_scan();
+            } else if (_pan_scan_is_local) {
+                gcs().send_text(MAV_SEVERITY_WARNING,
+                    "RSSI_SCAN: Local rescan weak (%.0f%%), retrying local",
+                    (double)(_rssi_best * 100.0f));
+                start_pan_local_rescan();
+            } else {
+                gcs().send_text(MAV_SEVERITY_WARNING,
+                    "RSSI_SCAN: Signal too weak (%.0f%%), re-scanning",
+                    (double)(_rssi_best * 100.0f));
+                start_pan_scan();
+            }
             return;
         }
 
@@ -232,9 +285,9 @@ void ModeRSSIScan::update_dither()
     if ((now - _lock_acquired_ms) >= RSSI_RESCAN_GRACE_MS &&
         current_rssi < drop_threshold) {
         gcs().send_text(MAV_SEVERITY_WARNING,
-            "RSSI_SCAN: Signal dropped (%.0f%%), re-scanning",
+            "RSSI_SCAN: Signal dropped (%.0f%%), local re-scan",
             (double)(current_rssi * 100.0f));
-        start_pan_scan();
+        start_pan_local_rescan();
         return;
     }
 

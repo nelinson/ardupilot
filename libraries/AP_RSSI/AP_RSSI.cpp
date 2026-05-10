@@ -167,21 +167,21 @@ const AP_Param::GroupInfo AP_RSSI::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("HTTP_LOSS", 14, AP_RSSI, rssi_http_loss_ms, 1500),
 
-    // @Param: HTTP_DBM_LO
+    // @Param: HTTP_SNR_LO
     // @DisplayName: SNR mapped to 0% RSSI (Solo8)
-    // @Description: SNR (dB) treated as weakest (0.0 / 0%) when RSSI_TYPE=7. This parameter name is historic; it is repurposed as SNR_LO for DTC/Solo8 per-node SNR scaling.
+    // @Description: Per-node SNR (dB) treated as weakest (0.0 / 0%) when RSSI_TYPE=7. Former name RSSI_HTTP_DBM_LO referred to these same thresholds.
     // @Range: 0 50
     // @Units: dB
     // @User: Advanced
-    AP_GROUPINFO("HTTP_DBM_LO", 15, AP_RSSI, rssi_http_dbm_low, 3.1f),
+    AP_GROUPINFO("HTTP_SNR_LO", 15, AP_RSSI, rssi_http_snr_low, 3.1f),
 
-    // @Param: HTTP_DBM_HI
+    // @Param: HTTP_SNR_HI
     // @DisplayName: SNR mapped to 100% RSSI (Solo8)
-    // @Description: SNR (dB) treated as strongest (1.0 / 100%) when RSSI_TYPE=7. Values above this are clipped. This parameter name is historic; it is repurposed as SNR_HI for DTC/Solo8 per-node SNR scaling.
+    // @Description: Per-node SNR (dB) treated as strongest (1.0 / 100%) when RSSI_TYPE=7. Values above this are clipped. Former name RSSI_HTTP_DBM_HI referred to these same thresholds.
     // @Range: 0 50
     // @Units: dB
     // @User: Advanced
-    AP_GROUPINFO("HTTP_DBM_HI", 16, AP_RSSI, rssi_http_dbm_high, 20.0f),
+    AP_GROUPINFO("HTTP_SNR_HI", 16, AP_RSSI, rssi_http_snr_high, 20.0f),
 #endif  // AP_RSSI_HTTP_ENABLED
 
     AP_GROUPEND
@@ -288,6 +288,17 @@ float AP_RSSI::read_receiver_link_quality()
         }
         // Raw SNR in dB for the tracked node.
         return http_state.last_snr_db;
+    }
+#endif
+    return -1;
+}
+
+int16_t AP_RSSI::get_http_rate_hz() const
+{
+#if AP_RSSI_HTTP_ENABLED
+    if (RssiType(rssi_type.get()) == RssiType::SOLO8_HTTP) {
+        const int8_t hz_param = rssi_http_rate_hz.get();
+        return int16_t(hz_param < 1 ? 1 : hz_param);
     }
 #endif
     return -1;
@@ -564,8 +575,7 @@ float AP_RSSI::read_udp_rssi()
     - LocalDemodStatus.SNR[nodeId]     (dB)
     - LocalDemodStatus.sigLevA[nodeId] (dBm, kept for diagnostics)
 
-  SNR is scaled by the existing HTTP_DBM_LO/HI parameters (historic
-  naming; repurposed as SNR_LO/SNR_HI) into the 0..1 range consumed by
+  SNR is scaled by RSSI_HTTP_SNR_LO/RSSI_HTTP_SNR_HI into the 0..1 range consumed by
   the rest of the autopilot (MAVLink, Logger, ModeRSSIScan, OSD, ...).
 
   HTTP Basic auth uses the Solo8 factory credentials baked into the
@@ -807,10 +817,10 @@ void AP_RSSI::http_thread()
                 http_state.last_sig_a_dbm = noise_a0_dbm;
                 http_state.last_sig_b_dbm = noise_b0_dbm;
             } else {
-                // Repurpose HTTP_DBM_LO/HI as SNR_LO/SNR_HI for scaling.
+                // Scale SNR to 0..1 using RSSI_HTTP_SNR_LO/HI thresholds.
                 // snr_db is in dB (>= 0) with -3 sentinel meaning no node.
-                const float snr_lo = rssi_http_dbm_low.get();
-                const float snr_hi = rssi_http_dbm_high.get();
+                const float snr_lo = rssi_http_snr_low.get();
+                const float snr_hi = rssi_http_snr_high.get();
                 const float scaled = (snr_db < 0) ? 0.0f : scale_and_constrain_float_rssi(snr_db, snr_lo, snr_hi);
 
                 WITH_SEMAPHORE(http_state.sem);

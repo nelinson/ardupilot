@@ -151,6 +151,8 @@ public:
         k_param_rssi_scp_pwm,
         k_param_rssi_scp_arc,
         k_param_rssi_sc_to,
+        k_param_rssi_rescan_local_arc,      // local pan arc for drop-triggered rescan
+        k_param_rssi_rescan_fallback,       // fallback to full pan scan if local rescan is weak
     };
 
     AP_Int16 format_version;
@@ -206,6 +208,8 @@ public:
     AP_Int8     rssi_lock_threshold;    // default 30 (%)
     AP_Int8     rssi_dither_angle;      // default 8  (degrees)
     AP_Int8     rssi_rescan_drop;       // default 20 (%)
+    AP_Int16    rssi_rescan_local_arc;  // default 120 (deg)
+    AP_Int8     rssi_rescan_fallback;   // default 1 (0=local only, 1=allow full fallback)
     AP_Int16    rssi_scy_pwm;           // compass RSSI scan yaw drive PWM (us)
     AP_Int16    rssi_scy_arc;           // yaw scan arc (deg) from entry heading
     AP_Int16    rssi_scp_pwm;           // compass RSSI scan pitch drive PWM (us)

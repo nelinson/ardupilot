@@ -71,6 +71,7 @@ public:
     // 0.0 represents weakest signal, 1.0 represents maximum signal.
     float read_receiver_rssi();
     float read_receiver_link_quality();
+    int16_t get_http_rate_hz() const;
     // Read the receiver RSSI value as an 8-bit integer
     // 0 represents weakest signal, 255 represents maximum signal.
     uint8_t read_receiver_rssi_uint8();   
@@ -141,8 +142,8 @@ private:
     AP_Int16  rssi_http_port;
     AP_Int8   rssi_http_rate_hz;
     AP_Int16  rssi_http_loss_ms;
-    AP_Float  rssi_http_dbm_low;
-    AP_Float  rssi_http_dbm_high;
+    AP_Float  rssi_http_snr_low;
+    AP_Float  rssi_http_snr_high;
 
     // sub-stages of the HTTP poll so the diagnostic heartbeat can point
     // at the exact step that's failing. Values match the trailing chars
