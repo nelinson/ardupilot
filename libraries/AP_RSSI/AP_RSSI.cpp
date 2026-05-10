@@ -444,14 +444,14 @@ void AP_RSSI::udp_init()
     udp_state.bound = false;
 
     if (rssi_udp_port.get() <= 0) {
-        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "Colugo RSSI_UDP: disabled (UDP_PORT=0)");
+        GCS_SEND_TEXT(MAV_SEVERITY_WARNING, "RSSI_UDP: disabled (UDP_PORT=0)");
         return;
     }
 
     if (!hal.scheduler->thread_create(
             FUNCTOR_BIND_MEMBER(&AP_RSSI::udp_thread, void),
             "RSSI_UDP", 2048, AP_HAL::Scheduler::PRIORITY_IO, 0)) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo RSSI_UDP: thread create failed");
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "RSSI_UDP: thread create failed");
         return;
     }
     udp_state.thread_started = true;
@@ -464,7 +464,7 @@ void AP_RSSI::udp_thread()
 
     udp_state.sock = NEW_NOTHROW SocketAPM(true /*datagram*/);
     if (udp_state.sock == nullptr) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo RSSI_UDP: socket alloc failed");
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "RSSI_UDP: socket alloc failed");
         return;
     }
     udp_state.sock->set_blocking(false);
@@ -472,13 +472,13 @@ void AP_RSSI::udp_thread()
 
     const uint16_t bind_port = uint16_t(rssi_udp_port.get());
     if (!udp_state.sock->bind("0.0.0.0", bind_port)) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo RSSI_UDP: bind :%u failed", unsigned(bind_port));
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "RSSI_UDP: bind :%u failed", unsigned(bind_port));
         delete udp_state.sock;
         udp_state.sock = nullptr;
         return;
     }
     udp_state.bound = true;
-    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Colugo RSSI_UDP: listening on :%u", unsigned(bind_port));
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "RSSI_UDP: listening on :%u", unsigned(bind_port));
 
     uint8_t buf[128];
     while (true) {
@@ -634,7 +634,7 @@ void AP_RSSI::http_init()
     if (!hal.scheduler->thread_create(
             FUNCTOR_BIND_MEMBER(&AP_RSSI::http_thread, void),
             "RSSI_HTTP", 4096, AP_HAL::Scheduler::PRIORITY_IO, 0)) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo RSSI_HTTP: thread create failed");
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "RSSI_HTTP: thread create failed");
         return;
     }
     http_state.thread_started = true;
@@ -647,7 +647,7 @@ void AP_RSSI::http_thread()
     // persistent response buffer for /localrfstatus.json
     char *local_resp = (char*)calloc(SOLO8_HTTP_LOCAL_RESP_BUF, 1);
     if (local_resp == nullptr) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo RSSI_HTTP: alloc failed");
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "RSSI_HTTP: alloc failed");
         return;
     }
 

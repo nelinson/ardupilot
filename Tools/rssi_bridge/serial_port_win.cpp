@@ -1,9 +1,3 @@
-/*
- * Copyright (c) 2026 Colugo. All rights reserved.
- *
- * Proprietary work product of Colugo.
- * Created by Nati Elinson.
- */
 #include "serial_port.h"
 
 #ifdef _WIN32

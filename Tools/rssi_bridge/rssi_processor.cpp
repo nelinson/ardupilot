@@ -1,9 +1,3 @@
-/*
- * Copyright (c) 2026 Colugo. All rights reserved.
- *
- * Proprietary work product of Colugo.
- * Created by Nati Elinson.
- */
 #include "rssi_processor.h"
 
 #include <algorithm>

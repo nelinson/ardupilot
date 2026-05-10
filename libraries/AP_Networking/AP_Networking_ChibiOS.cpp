@@ -112,12 +112,12 @@ bool AP_Networking_ChibiOS::init()
 #endif
 
     if (!allocate_buffers()) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo NET: Failed to allocate buffers");
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "NET: Failed to allocate buffers");
         return false;
     }
 
     if (!macInit()) {
-        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "Colugo NET: macInit failed");
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "NET: macInit failed");
         return false;
     }
 
@@ -395,7 +395,7 @@ void AP_Networking_ChibiOS::thread()
         }
         memcpy(thisif->hwaddr, derived, ETHARP_HWADDR_LEN);
         GCS_SEND_TEXT(MAV_SEVERITY_WARNING,
-                      "Colugo NET: NET_MACADDR is 00:00:00:00:00:00, using %02X:%02X:%02X:%02X:%02X:%02X",
+                      "NET: NET_MACADDR is 00:00:00:00:00:00, using %02X:%02X:%02X:%02X:%02X:%02X",
                       unsigned(derived[0]), unsigned(derived[1]), unsigned(derived[2]),
                       unsigned(derived[3]), unsigned(derived[4]), unsigned(derived[5]));
     }
